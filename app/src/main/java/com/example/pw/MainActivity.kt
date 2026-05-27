@@ -12,10 +12,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.VpnKey
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -44,6 +47,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import java.security.MessageDigest
 import java.util.UUID
+import kotlin.random.Random
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -51,28 +55,28 @@ class MainActivity : ComponentActivity() {
         setContent {
             PwTheme {
                 val navController = rememberNavController()
-                var currentUser by remember { mutableStateOf(Firebase.auth.currentUser) }
-
-                // Use LaunchedEffect to handle navigation based on Auth state
-                LaunchedEffect(currentUser) {
-                    if (currentUser != null) {
-                        Log.d("MainActivity", "User logged in, navigating to main")
-                        navController.navigate("main") {
-                            popUpTo(0) { inclusive = true } // Clear backstack
-                        }
-                    } else {
-                        Log.d("MainActivity", "No user, navigating to auth")
-                        navController.navigate("auth") {
-                            popUpTo(0) { inclusive = true }
-                        }
-                    }
-                }
+                val initialUser = remember { Firebase.auth.currentUser }
+                var currentUser by remember { mutableStateOf(initialUser) }
 
                 // Listen for Auth changes
                 DisposableEffect(Unit) {
                     val listener = FirebaseAuth.AuthStateListener { auth ->
-                        Log.d("MainActivity", "Auth state changed: user=${auth.currentUser?.uid}")
-                        currentUser = auth.currentUser
+                        val user = auth.currentUser
+                        if (user?.uid != currentUser?.uid) {
+                            Log.d("MainActivity", "Auth state changed: user=${user?.uid}")
+                            currentUser = user
+                            
+                            // Navigate only when state actually changes from the initial/current state
+                            if (user != null) {
+                                navController.navigate("main") {
+                                    popUpTo("auth") { inclusive = true }
+                                }
+                            } else {
+                                navController.navigate("auth") {
+                                    popUpTo("main") { inclusive = true }
+                                }
+                            }
+                        }
                     }
                     Firebase.auth.addAuthStateListener(listener)
                     onDispose { Firebase.auth.removeAuthStateListener(listener) }
@@ -80,7 +84,7 @@ class MainActivity : ComponentActivity() {
 
                 NavHost(
                     navController = navController,
-                    startDestination = if (Firebase.auth.currentUser == null) "auth" else "main"
+                    startDestination = if (initialUser == null) "auth" else "main"
                 ) {
                     composable("auth") {
                         AuthScreen()
@@ -391,12 +395,16 @@ fun EntryDialog(
     var vendor by remember { mutableStateOf(initialVendor) }
     var account by remember { mutableStateOf(initialAccount) }
     var password by remember { mutableStateOf(initialPassword) }
+    var originalPassword by remember { mutableStateOf(initialPassword) }
+
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
-            Column {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 OutlinedTextField(
                     value = vendor,
                     onValueChange = { vendor = it },
@@ -411,12 +419,54 @@ fun EntryDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(modifier = Modifier.height(8.dp))
+                
+                // Show Original Password only if we are editing (title contains "Edit")
+                if (title.contains("Edit", ignoreCase = true)) {
+                    OutlinedTextField(
+                        value = originalPassword,
+                        onValueChange = { originalPassword = it },
+                        label = { Text("Original Password") },
+                        modifier = Modifier.fillMaxWidth(),
+                        trailingIcon = {
+                            IconButton(onClick = {
+                                clipboardManager.setText(AnnotatedString(originalPassword))
+                                Toast.makeText(context, "Original password copied", Toast.LENGTH_SHORT).show()
+                            }) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = "Copy Original Password")
+                            }
+                        }
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it },
                     label = { Text("Password") },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    trailingIcon = {
+                        Row {
+                            IconButton(onClick = {
+                                clipboardManager.setText(AnnotatedString(password))
+                                Toast.makeText(context, "Password copied", Toast.LENGTH_SHORT).show()
+                            }) {
+                                Icon(Icons.Default.ContentCopy, contentDescription = "Copy Password")
+                            }
+                            IconButton(onClick = { password = generateStrongPassword() }) {
+                                Icon(Icons.Default.VpnKey, contentDescription = "Generate Password")
+                            }
+                        }
+                    }
                 )
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = { password = generateStrongPassword() },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Icon(Icons.Default.VpnKey, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Generate Strong Password")
+                }
             }
         },
         confirmButton = {
@@ -433,4 +483,11 @@ fun EntryDialog(
             }
         }
     )
+}
+
+fun generateStrongPassword(length: Int = 12): String {
+    val charPool = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()-_=+"
+    return (1..length)
+        .map { charPool.random() }
+        .joinToString("")
 }
