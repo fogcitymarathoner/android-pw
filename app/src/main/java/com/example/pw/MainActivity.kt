@@ -2,6 +2,7 @@ package com.example.pw
 
 import android.os.Bundle
 import android.util.Log
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -28,6 +29,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -43,6 +45,8 @@ import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
 import com.google.firebase.database.ValueEventListener
 import com.google.firebase.database.database
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import java.security.MessageDigest
@@ -50,6 +54,17 @@ import java.util.UUID
 import kotlin.random.Random
 
 class MainActivity : ComponentActivity() {
+    private var keepScreenOnJob: Job? = null
+
+    fun keepScreenOnTemporarily(durationMs: Long = 20000) {
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        keepScreenOnJob?.cancel()
+        keepScreenOnJob = lifecycleScope.launch {
+            delay(durationMs)
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
@@ -364,6 +379,7 @@ fun MainScreen(user: FirebaseUser) {
                                     IconButton(onClick = {
                                         clipboardManager.setText(AnnotatedString(item.pw))
                                         Toast.makeText(context, "${item.vendor}'s password has been copied", Toast.LENGTH_SHORT).show()
+                                        (context as? MainActivity)?.keepScreenOnTemporarily()
                                     }) {
                                         Icon(Icons.Default.ContentCopy, contentDescription = "Copy Password")
                                     }
@@ -431,6 +447,7 @@ fun EntryDialog(
                             IconButton(onClick = {
                                 clipboardManager.setText(AnnotatedString(originalPassword))
                                 Toast.makeText(context, "Original password copied", Toast.LENGTH_SHORT).show()
+                                (context as? MainActivity)?.keepScreenOnTemporarily()
                             }) {
                                 Icon(Icons.Default.ContentCopy, contentDescription = "Copy Original Password")
                             }
@@ -449,6 +466,7 @@ fun EntryDialog(
                             IconButton(onClick = {
                                 clipboardManager.setText(AnnotatedString(password))
                                 Toast.makeText(context, "Password copied", Toast.LENGTH_SHORT).show()
+                                (context as? MainActivity)?.keepScreenOnTemporarily()
                             }) {
                                 Icon(Icons.Default.ContentCopy, contentDescription = "Copy Password")
                             }
