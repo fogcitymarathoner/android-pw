@@ -97,3 +97,9 @@ lint/tmp/
 # OS-specific
 .DS_Store
 Thumbs.db
+
+# builds
+app/release/
+
+# signatures
+my-release-key.jks

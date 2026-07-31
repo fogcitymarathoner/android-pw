@@ -58,6 +58,7 @@ import kotlin.random.Random
 class MainActivity : ComponentActivity() {
     private var keepScreenOnJob: Job? = null
 
+    // Postponing screensaver lockup for 30 seconds as requested
     fun keepScreenOnTemporarily(durationMs: Long = 30000) {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         keepScreenOnJob?.cancel()
@@ -72,48 +73,47 @@ class MainActivity : ComponentActivity() {
         setContent {
             PwTheme {
                 val navController = rememberNavController()
-                val initialUser = remember { Firebase.auth.currentUser }
-                var currentUser by remember { mutableStateOf(initialUser) }
+                var currentUser by remember { mutableStateOf(Firebase.auth.currentUser) }
 
-                // Listen for Auth changes
+                // Single point of truth for Auth state
                 DisposableEffect(Unit) {
                     val listener = FirebaseAuth.AuthStateListener { auth ->
                         val user = auth.currentUser
                         if (user?.uid != currentUser?.uid) {
-                            Log.d("MainActivity", "Auth state changed: user=${user?.uid}")
                             currentUser = user
-                            
-                            // Navigate only when state actually changes from the initial/current state
-                            if (user != null) {
-                                navController.navigate("main") {
-                                    popUpTo("auth") { inclusive = true }
-                                }
-                            } else {
-                                navController.navigate("auth") {
-                                    popUpTo("main") { inclusive = true }
-                                }
-                            }
                         }
                     }
                     Firebase.auth.addAuthStateListener(listener)
                     onDispose { Firebase.auth.removeAuthStateListener(listener) }
                 }
 
+                // Handle navigation based on currentUser state change
+                LaunchedEffect(currentUser) {
+                    if (currentUser != null) {
+                        navController.navigate("main") {
+                            popUpTo("auth") { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    } else {
+                        navController.navigate("auth") {
+                            popUpTo("main") { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    }
+                }
+
                 NavHost(
                     navController = navController,
-                    startDestination = if (initialUser == null) "auth" else "main"
+                    startDestination = if (Firebase.auth.currentUser == null) "auth" else "main"
                 ) {
                     composable("auth") {
                         AuthScreen()
                     }
                     composable("main") {
-                        val user = currentUser
-                        if (user != null) {
+                        currentUser?.let { user ->
                             MainScreen(user = user)
-                        } else {
-                            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                CircularProgressIndicator()
-                            }
+                        } ?: Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
                         }
                     }
                 }
@@ -138,7 +138,6 @@ fun AuthScreen() {
         Button(onClick = {
             scope.launch {
                 try {
-                    Log.d("AuthScreen", "Sign-in button clicked")
                     val rawNonce = UUID.randomUUID().toString()
                     val bytes = rawNonce.toByteArray()
                     val md = MessageDigest.getInstance("SHA-256")
@@ -156,10 +155,8 @@ fun AuthScreen() {
                         .addCredentialOption(googleIdOption)
                         .build()
 
-                    Log.d("AuthScreen", "Requesting credentials...")
                     val result = credentialManager.getCredential(context, request)
                     val credential = result.credential
-                    Log.d("AuthScreen", "Received credential of type: ${credential.type}")
 
                     val googleIdTokenCredential = try {
                         if (credential is GoogleIdTokenCredential) {
@@ -168,17 +165,14 @@ fun AuthScreen() {
                             GoogleIdTokenCredential.createFrom(credential.data)
                         }
                     } catch (e: Exception) {
-                        Log.e("AuthScreen", "Failed to parse Google ID Token", e)
                         null
                     }
 
                     if (googleIdTokenCredential != null) {
-                        Log.d("AuthScreen", "ID Token extracted successfully")
                         Toast.makeText(context, "Signing into Firebase...", Toast.LENGTH_SHORT).show()
                         val firebaseCredential = GoogleAuthProvider.getCredential(googleIdTokenCredential.idToken, null)
                         Firebase.auth.signInWithCredential(firebaseCredential).await()
                     } else {
-                        Log.e("AuthScreen", "Could not extract Google ID Token from ${credential.type}")
                         Toast.makeText(context, "Sign-in error: Invalid response from Google", Toast.LENGTH_LONG).show()
                     }
                 } catch (e: Exception) {
@@ -207,7 +201,6 @@ fun MainScreen(user: FirebaseUser) {
     var showAddDialog by remember { mutableStateOf(false) }
 
     DisposableEffect(user.uid) {
-        Log.d("MainScreen", "Setting up database listener for user: ${user.uid}")
         val listener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val list = mutableListOf<PwEntity>()
@@ -218,7 +211,6 @@ fun MainScreen(user: FirebaseUser) {
                     }
                 }
                 passwords = list
-                Log.d("MainScreen", "Data updated: ${list.size} items")
             }
 
             override fun onCancelled(error: DatabaseError) {
@@ -226,10 +218,7 @@ fun MainScreen(user: FirebaseUser) {
             }
         }
         dbRef.addValueEventListener(listener)
-        onDispose { 
-            Log.d("MainScreen", "Removing database listener")
-            dbRef.removeEventListener(listener) 
-        }
+        onDispose { dbRef.removeEventListener(listener) }
     }
 
     val filteredPasswords = remember(passwords, searchQuery) {
@@ -314,7 +303,7 @@ fun MainScreen(user: FirebaseUser) {
         floatingActionButton = {
             FloatingActionButton(
                 onClick = { showAddDialog = true },
-                containerColor = Color(0xFF2196F3), // Standard Blue
+                containerColor = Color(0xFF2196F3),
                 contentColor = Color.White,
                 shape = CircleShape
             ) {
@@ -333,10 +322,7 @@ fun MainScreen(user: FirebaseUser) {
                         text = "My Passwords",
                         style = MaterialTheme.typography.headlineMedium,
                     )
-                    TextButton(onClick = { 
-                        Log.d("MainScreen", "Sign out clicked")
-                        Firebase.auth.signOut() 
-                    }) {
+                    TextButton(onClick = { Firebase.auth.signOut() }) {
                         Text("Sign Out")
                     }
                 }
@@ -454,7 +440,6 @@ fun EntryDialog(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 
-                // Show Original Password only if we are editing (title contains "Edit")
                 if (title.contains("Edit", ignoreCase = true)) {
                     OutlinedTextField(
                         value = originalPassword,
