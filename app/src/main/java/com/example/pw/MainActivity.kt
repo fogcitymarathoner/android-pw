@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.VpnKey
+import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -28,6 +29,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
@@ -56,7 +58,7 @@ import kotlin.random.Random
 class MainActivity : ComponentActivity() {
     private var keepScreenOnJob: Job? = null
 
-    fun keepScreenOnTemporarily(durationMs: Long = 20000) {
+    fun keepScreenOnTemporarily(durationMs: Long = 30000) {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         keepScreenOnJob?.cancel()
         keepScreenOnJob = lifecycleScope.launch {
@@ -201,6 +203,7 @@ fun MainScreen(user: FirebaseUser) {
     
     var entryToEdit by remember { mutableStateOf<PwEntity?>(null) }
     var entryToDelete by remember { mutableStateOf<PwEntity?>(null) }
+    var entryToView by remember { mutableStateOf<PwEntity?>(null) }
     var showAddDialog by remember { mutableStateOf(false) }
 
     DisposableEffect(user.uid) {
@@ -295,6 +298,18 @@ fun MainScreen(user: FirebaseUser) {
         )
     }
 
+    entryToView?.let { entity ->
+        ViewPasswordDialog(
+            entity = entity,
+            onDismiss = { entryToView = null },
+            onCopy = {
+                clipboardManager.setText(AnnotatedString(entity.pw))
+                Toast.makeText(context, "${entity.vendor}'s password has been copied", Toast.LENGTH_SHORT).show()
+                (context as? MainActivity)?.keepScreenOnTemporarily()
+            }
+        )
+    }
+
     Scaffold(
         floatingActionButton = {
             FloatingActionButton(
@@ -382,6 +397,9 @@ fun MainScreen(user: FirebaseUser) {
                                         (context as? MainActivity)?.keepScreenOnTemporarily()
                                     }) {
                                         Icon(Icons.Default.ContentCopy, contentDescription = "Copy Password")
+                                    }
+                                    IconButton(onClick = { entryToView = item }) {
+                                        Icon(Icons.Default.Visibility, contentDescription = "View Password")
                                     }
                                     IconButton(onClick = { entryToEdit = item }) {
                                         Icon(Icons.Default.Edit, contentDescription = "Edit")
@@ -508,4 +526,49 @@ fun generateStrongPassword(length: Int = 12): String {
     return (1..length)
         .map { charPool.random() }
         .joinToString("")
+}
+
+@Composable
+fun ViewPasswordDialog(
+    entity: PwEntity,
+    onDismiss: () -> Unit,
+    onCopy: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(entity.vendor) },
+        text = {
+            Column {
+                if (entity.account.isNotBlank()) {
+                    Text(
+                        text = "Account: ${entity.account}",
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                }
+                Text(
+                    text = "Password:",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = entity.pw,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        confirmButton = {
+            Button(onClick = onCopy) {
+                Icon(Icons.Default.ContentCopy, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Copy to Clipboard")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Close")
+            }
+        }
+    )
 }
