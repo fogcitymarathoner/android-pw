@@ -310,28 +310,33 @@ fun ExpensesScreen(user: FirebaseUser) {
     val db = remember { AppDatabase.getDatabase(context) }
     val expenseDao = remember { db.expenseDao() }
     val categoryDao = remember { db.categoryDao() }
+    val vendorDao = remember { db.vendorDao() }
     
-    val expensesWithCategory by expenseDao.getExpensesWithCategoryForUser(user.uid).collectAsState(initial = emptyList())
+    val expensesWithDetails by expenseDao.getExpensesWithDetailsForUser(user.uid).collectAsState(initial = emptyList())
     val categories by categoryDao.getCategoriesForUser(user.uid).collectAsState(initial = emptyList())
+    val vendors by vendorDao.getVendorsForUser(user.uid).collectAsState(initial = emptyList())
+    
+    var selectedCategoryId by remember { mutableStateOf<String?>(null) }
+    var selectedVendorId by remember { mutableStateOf<String?>(null) }
     
     var searchQuery by remember { mutableStateOf("") }
     var showAddDialog by remember { mutableStateOf(false) }
-    var entryToEdit by remember { mutableStateOf<ExpenseWithCategory?>(null) }
+    var entryToEdit by remember { mutableStateOf<ExpenseWithDetails?>(null) }
     var entryToDelete by remember { mutableStateOf<Expense?>(null) }
     val scope = rememberCoroutineScope()
 
-    val fbExpensesRef = Firebase.database.reference.child("users").child(user.uid).child("expenses")
-    val fbCategoriesRef = Firebase.database.reference.child("users").child(user.uid).child("categories")
+    val fbExpensesRef = remember(user.uid) { Firebase.database.reference.child("users").child(user.uid).child("expenses") }
+    val fbCategoriesRef = remember(user.uid) { Firebase.database.reference.child("users").child(user.uid).child("categories") }
+    val fbVendorsRef = remember(user.uid) { Firebase.database.reference.child("users").child(user.uid).child("vendors") }
 
-    // Sync categories and expenses from Firebase to Room
-    LaunchedEffect(user.uid) {
-        fbCategoriesRef.addValueEventListener(object : ValueEventListener {
+    // Sync from Firebase to Room
+    DisposableEffect(user.uid) {
+        val catListener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 scope.launch {
                     snapshot.children.forEach { child ->
                         val remoteId = child.key ?: return@forEach
                         val name = child.child("name").value?.toString() ?: ""
-                        
                         val existing = categoryDao.getByCategoryRemoteId(remoteId)
                         if (existing == null) {
                             categoryDao.insert(Category(remoteId = remoteId, name = name, userId = user.uid))
@@ -342,34 +347,49 @@ fun ExpensesScreen(user: FirebaseUser) {
                 }
             }
             override fun onCancelled(error: DatabaseError) {}
-        })
+        }
+        fbCategoriesRef.addValueEventListener(catListener)
 
-        fbExpensesRef.addValueEventListener(object : ValueEventListener {
+        val vendorListener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 scope.launch {
                     snapshot.children.forEach { child ->
                         val remoteId = child.key ?: return@forEach
-                        val vendor = child.child("vendor").value?.toString() ?: ""
+                        val name = child.child("name").value?.toString() ?: ""
+                        val existing = vendorDao.getByVendorRemoteId(remoteId)
+                        if (existing == null) {
+                            vendorDao.insert(Vendor(remoteId = remoteId, name = name, userId = user.uid))
+                        } else if (existing.name != name) {
+                            vendorDao.insert(existing.copy(name = name))
+                        }
+                    }
+                }
+            }
+            override fun onCancelled(error: DatabaseError) {}
+        }
+        fbVendorsRef.addValueEventListener(vendorListener)
+
+        val expListener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                scope.launch {
+                    snapshot.children.forEach { child ->
+                        val remoteId = child.key ?: return@forEach
                         val amount = child.child("amount").value?.toString() ?: ""
                         val date = child.child("date").value?.toString() ?: ""
                         val memo = child.child("memo").value?.toString() ?: ""
                         val remoteCatId = child.child("remoteCategoryId").value?.toString()
-                        
-                        // Find local category ID from remoteCatId
-                        val localCatId = remoteCatId?.let { categoryDao.getByCategoryRemoteId(it)?.id }
+                        val remoteVendorId = child.child("remoteVendorId").value?.toString()
 
                         val existing = expenseDao.getByExpenseRemoteId(remoteId)
                         val newExpense = Expense(
-                            localId = existing?.localId ?: 0,
                             remoteId = remoteId,
-                            vendor = vendor,
+                            vendorId = remoteVendorId,
+                            categoryId = remoteCatId,
                             amount = amount,
                             date = date,
                             memo = memo,
-                            categoryId = localCatId,
                             userId = user.uid
                         )
-                        
                         if (existing == null || existing != newExpense) {
                             expenseDao.insert(newExpense)
                         }
@@ -377,44 +397,68 @@ fun ExpensesScreen(user: FirebaseUser) {
                 }
             }
             override fun onCancelled(error: DatabaseError) {}
-        })
+        }
+        fbExpensesRef.addValueEventListener(expListener)
+
+        onDispose {
+            fbCategoriesRef.removeEventListener(catListener)
+            fbVendorsRef.removeEventListener(vendorListener)
+            fbExpensesRef.removeEventListener(expListener)
+        }
     }
 
-    val filtered = expensesWithCategory.filter { 
-        it.expense.vendor.contains(searchQuery, ignoreCase = true) || 
-        (it.categoryName ?: "").contains(searchQuery, ignoreCase = true) 
+    val filtered = remember(expensesWithDetails, selectedCategoryId, selectedVendorId, searchQuery) {
+        expensesWithDetails.filter { 
+            (selectedCategoryId == null || it.expense.categoryId == selectedCategoryId) &&
+            (selectedVendorId == null || it.expense.vendorId == selectedVendorId) &&
+            (searchQuery.isBlank() || 
+             (it.vendorName ?: "").contains(searchQuery, ignoreCase = true) || 
+             (it.categoryName ?: "").contains(searchQuery, ignoreCase = true))
+        }.sortedByDescending { it.expense.date }
+    }
+
+    // Vendors filtered by selected category for the workflow
+    val vendorsForCategory = remember(vendors, selectedCategoryId, expensesWithDetails) {
+        if (selectedCategoryId == null) vendors.sortedBy { it.name }
+        else {
+            val vendorIdsInCategory = expensesWithDetails
+                .filter { it.expense.categoryId == selectedCategoryId }
+                .mapNotNull { it.expense.vendorId }
+                .toSet()
+            vendors.filter { it.remoteId in vendorIdsInCategory }.sortedBy { it.name }
+        }
     }
 
     if (showAddDialog) {
         ExpenseDialog(
+            initialVendorId = selectedVendorId,
+            initialCategoryId = selectedCategoryId,
             categories = categories,
+            vendors = vendors,
             onDismiss = { showAddDialog = false },
-            onSave = { v, catId, a, d, m ->
+            onSave = { vendorId, catId, a, d, m ->
                 scope.launch {
-                    val category = categories.find { it.id == catId }
+                    val cat = categories.find { it.remoteId == catId }
+                    val ven = vendors.find { it.remoteId == vendorId }
                     val newExpRef = fbExpensesRef.push()
                     val remoteId = newExpRef.key
                     
                     val expense = Expense(
-                        remoteId = remoteId,
-                        vendor = v, 
+                        remoteId = remoteId!!,
+                        vendorId = vendorId, 
                         categoryId = catId, 
                         amount = a, 
                         date = d, 
                         memo = m, 
                         userId = user.uid
                     )
-                    
-                    // Save locally first
                     expenseDao.insert(expense)
-                    
-                    // Then push to Firebase
                     newExpRef.setValue(mapOf(
-                        "vendor" to v,
                         "amount" to a,
                         "date" to d,
                         "memo" to m,
-                        "remoteCategoryId" to category?.remoteId
+                        "remoteCategoryId" to cat?.remoteId,
+                        "remoteVendorId" to ven?.remoteId
                     ))
                 }
                 showAddDialog = false
@@ -422,10 +466,17 @@ fun ExpensesScreen(user: FirebaseUser) {
             onAddCategory = { name ->
                 scope.launch {
                     val newCatRef = fbCategoriesRef.push()
-                    val remoteId = newCatRef.key
-                    val category = Category(remoteId = remoteId, name = name, userId = user.uid)
-                    categoryDao.insert(category)
+                    val rid = newCatRef.key!!
+                    categoryDao.insert(Category(remoteId = rid, name = name, userId = user.uid))
                     newCatRef.setValue(mapOf("name" to name))
+                }
+            },
+            onAddVendor = { name ->
+                scope.launch {
+                    val newVenRef = fbVendorsRef.push()
+                    val rid = newVenRef.key!!
+                    vendorDao.insert(Vendor(remoteId = rid, name = name, userId = user.uid))
+                    newVenRef.setValue(mapOf("name" to name))
                 }
             }
         )
@@ -433,26 +484,28 @@ fun ExpensesScreen(user: FirebaseUser) {
 
     entryToEdit?.let { item ->
         ExpenseDialog(
-            initialVendor = item.expense.vendor,
+            initialVendorId = item.expense.vendorId,
             initialCategoryId = item.expense.categoryId,
             initialAmount = item.expense.amount,
             initialDate = item.expense.date,
             initialMemo = item.expense.memo,
             categories = categories,
+            vendors = vendors,
             onDismiss = { entryToEdit = null },
-            onSave = { v, catId, a, d, m ->
+            onSave = { venId, catId, a, d, m ->
                 scope.launch {
-                    val category = categories.find { it.id == catId }
-                    val updatedExpense = item.expense.copy(vendor = v, categoryId = catId, amount = a, date = d, memo = m)
+                    val cat = categories.find { it.remoteId == catId }
+                    val ven = vendors.find { it.remoteId == venId }
+                    val updatedExpense = item.expense.copy(vendorId = venId, categoryId = catId, amount = a, date = d, memo = m)
                     expenseDao.update(updatedExpense)
                     
                     updatedExpense.remoteId?.let { rId ->
                         fbExpensesRef.child(rId).setValue(mapOf(
-                            "vendor" to v,
                             "amount" to a,
                             "date" to d,
                             "memo" to m,
-                            "remoteCategoryId" to category?.remoteId
+                            "remoteCategoryId" to cat?.remoteId,
+                            "remoteVendorId" to ven?.remoteId
                         ))
                     }
                 }
@@ -461,17 +514,24 @@ fun ExpensesScreen(user: FirebaseUser) {
             onAddCategory = { name ->
                 scope.launch {
                     val newCatRef = fbCategoriesRef.push()
-                    val remoteId = newCatRef.key
-                    val category = Category(remoteId = remoteId, name = name, userId = user.uid)
-                    categoryDao.insert(category)
+                    val rid = newCatRef.key!!
+                    categoryDao.insert(Category(remoteId = rid, name = name, userId = user.uid))
                     newCatRef.setValue(mapOf("name" to name))
+                }
+            },
+            onAddVendor = { name ->
+                scope.launch {
+                    val newVenRef = fbVendorsRef.push()
+                    val rid = newVenRef.key!!
+                    vendorDao.insert(Vendor(remoteId = rid, name = name, userId = user.uid))
+                    newVenRef.setValue(mapOf("name" to name))
                 }
             }
         )
     }
 
     entryToDelete?.let { item ->
-        AlertDialog(onDismissRequest = { entryToDelete = null }, title = { Text("Delete Expense?") }, text = { Text("Delete ${item.vendor}?") },
+        AlertDialog(onDismissRequest = { entryToDelete = null }, title = { Text("Delete Expense?") }, text = { Text("Delete expense for ${item.vendorId ?: "item"}?") },
             confirmButton = { Button(onClick = { 
                 scope.launch { 
                     expenseDao.delete(item) 
@@ -490,12 +550,100 @@ fun ExpensesScreen(user: FirebaseUser) {
             }
         }
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).padding(16.dp)) {
-            TopHeader(user.email ?: "", "Business Expenses (Relational)")
-            SearchBar(searchQuery) { searchQuery = it }
-            LazyColumn {
-                items(filtered, key = { it.expense.localId }) { item ->
-                    ExpenseCard(item, onEdit = { entryToEdit = item }, onDelete = { entryToDelete = item.expense })
+        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+            // HIGH-LEVEL HEADER (Compact)
+            Surface(tonalElevation = 2.dp) {
+                Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(text = "Expenses", style = MaterialTheme.typography.titleLarge)
+                        TextButton(onClick = { Firebase.auth.signOut() }) { Text("Sign Out") }
+                    }
+
+                    // SEARCH BAR (Takes up one full width line)
+                    OutlinedTextField(
+                        value = searchQuery,
+                        onValueChange = { searchQuery = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("Search...") },
+                        leadingIcon = { Icon(Icons.Default.Search, null, modifier = Modifier.size(20.dp)) },
+                        trailingIcon = { if (searchQuery.isNotEmpty()) IconButton(onClick = { searchQuery = "" }) { Icon(Icons.Default.Clear, null) } },
+                        singleLine = true,
+                        shape = CircleShape,
+                        colors = OutlinedTextFieldDefaults.colors(unfocusedContainerColor = Color.Transparent)
+                    )
+                }
+            }
+
+            // FILTER ROW (Logic-based placement: Horizontal chips)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                // Category Filter Chip
+                var catExpanded by remember { mutableStateOf(false) }
+                val currentCat = categories.find { it.remoteId == selectedCategoryId }
+                Box {
+                    FilterChip(
+                        selected = selectedCategoryId != null,
+                        onClick = { catExpanded = true },
+                        label = { Text(currentCat?.name ?: "Category") },
+                        trailingIcon = { Icon(Icons.Default.ArrowDropDown, null) }
+                    )
+                    DropdownMenu(expanded = catExpanded, onDismissRequest = { catExpanded = false }) {
+                        DropdownMenuItem(text = { Text("All Categories") }, onClick = { 
+                            selectedCategoryId = null
+                            selectedVendorId = null 
+                            catExpanded = false 
+                        })
+                        categories.forEach { c ->
+                            DropdownMenuItem(text = { Text(c.name) }, onClick = { 
+                                selectedCategoryId = c.remoteId
+                                selectedVendorId = null // Clear vendor when category changes as requested
+                                catExpanded = false 
+                            })
+                        }
+                    }
+                }
+
+                // Vendor Filter Chip
+                var venExpanded by remember { mutableStateOf(false) }
+                val currentVen = vendors.find { it.remoteId == selectedVendorId }
+                Box {
+                    FilterChip(
+                        selected = selectedVendorId != null,
+                        onClick = { venExpanded = true },
+                        label = { Text(currentVen?.name ?: "Vendor") },
+                        trailingIcon = { Icon(Icons.Default.ArrowDropDown, null) },
+                        enabled = true
+                    )
+                    DropdownMenu(expanded = venExpanded, onDismissRequest = { venExpanded = false }) {
+                        DropdownMenuItem(text = { Text("All Vendors") }, onClick = { selectedVendorId = null; venExpanded = false })
+                        vendorsForCategory.forEach { v ->
+                            DropdownMenuItem(text = { Text(v.name) }, onClick = { selectedVendorId = v.remoteId; venExpanded = false })
+                        }
+                    }
+                }
+            }
+
+            // THE LIST (Logical Results Area - Maximum Space)
+            if (filtered.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No matching expenses", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = 80.dp) // Space for FAB
+                ) {
+                    items(filtered, key = { it.expense.remoteId }) { item ->
+                        ExpenseCard(item, onEdit = { entryToEdit = item }, onDelete = { entryToDelete = item.expense })
+                    }
                 }
             }
         }
@@ -615,11 +763,11 @@ fun PasswordCard(item: PwEntity, onCopy: () -> Unit, onView: () -> Unit, onEdit:
 }
 
 @Composable
-fun ExpenseCard(item: ExpenseWithCategory, onEdit: () -> Unit, onDelete: () -> Unit) {
+fun ExpenseCard(item: ExpenseWithDetails, onEdit: () -> Unit, onDelete: () -> Unit) {
     Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
         Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Column(modifier = Modifier.weight(1f)) {
-                Text(text = item.expense.vendor, style = MaterialTheme.typography.titleLarge)
+                Text(text = item.vendorName ?: "Unknown Vendor", style = MaterialTheme.typography.titleLarge)
                 Text(text = "${item.categoryName ?: "No Category"} • ${item.expense.amount}", style = MaterialTheme.typography.bodyMedium)
                 Text(text = item.expense.date, style = MaterialTheme.typography.bodySmall)
             }
@@ -677,81 +825,128 @@ fun EntryDialog(title: String, initialVendor: String = "", initialAccount: Strin
     }, confirmButton = { Button(onClick = { if (vendor.isNotBlank() && password.isNotBlank()) onSave(vendor, account, password) }) { Text("Save") } }, dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } })
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ExpenseDialog(
-    initialVendor: String = "",
-    initialCategoryId: Int? = null,
+    initialVendorId: String? = null,
+    initialCategoryId: String? = null,
     initialAmount: String = "",
     initialDate: String = "",
     initialMemo: String = "",
     categories: List<Category>,
+    vendors: List<Vendor>,
     onDismiss: () -> Unit,
-    onSave: (String, Int?, String, String, String) -> Unit,
-    onAddCategory: (String) -> Unit
+    onSave: (String?, String?, String, String, String) -> Unit,
+    onAddCategory: (String) -> Unit,
+    onAddVendor: (String) -> Unit
 ) {
-    var v by remember { mutableStateOf(initialVendor) }
+    var selectedVendorId by remember { mutableStateOf(initialVendorId) }
     var selectedCategoryId by remember { mutableStateOf(initialCategoryId) }
-    var a by remember { mutableStateOf(initialAmount) }
-    var d by remember { mutableStateOf(initialDate) }
-    var m by remember { mutableStateOf(initialMemo) }
+    var amount by remember { mutableStateOf(initialAmount) }
+    var memo by remember { mutableStateOf(initialMemo) }
     
-    var expanded by remember { mutableStateOf(false) }
-    var showAddCategoryDialog by remember { mutableStateOf(false) }
-    var newCategoryName by remember { mutableStateOf("") }
+    // Date Picker State
+    var showDatePicker by remember { mutableStateOf(false) }
+    val initialDateMillis = remember(initialDate) {
+        if (initialDate.isNotEmpty()) {
+            try {
+                val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+                sdf.timeZone = java.util.TimeZone.getTimeZone("UTC")
+                sdf.parse(initialDate)?.time
+            } catch (e: Exception) { null }
+        } else null
+    }
+    val datePickerState = rememberDatePickerState(initialSelectedDateMillis = initialDateMillis ?: System.currentTimeMillis())
+    val formattedDate = remember(datePickerState.selectedDateMillis) {
+        datePickerState.selectedDateMillis?.let {
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+            sdf.timeZone = java.util.TimeZone.getTimeZone("UTC")
+            sdf.format(java.util.Date(it))
+        } ?: initialDate
+    }
 
-    if (showAddCategoryDialog) {
+    var catExpanded by remember { mutableStateOf(false) }
+    var venExpanded by remember { mutableStateOf(false) }
+    var showAddCatDialog by remember { mutableStateOf(false) }
+    var showAddVenDialog by remember { mutableStateOf(false) }
+    var newName by remember { mutableStateOf("") }
+
+    if (showAddCatDialog || showAddVenDialog) {
         AlertDialog(
-            onDismissRequest = { showAddCategoryDialog = false },
-            title = { Text("Add Category") },
-            text = { OutlinedTextField(newCategoryName, { newCategoryName = it }, label = { Text("Category Name") }) },
+            onDismissRequest = { showAddCatDialog = false; showAddVenDialog = false },
+            title = { Text(if (showAddCatDialog) "Add Category" else "Add Vendor") },
+            text = { OutlinedTextField(newName, { newName = it }, label = { Text("Name") }) },
             confirmButton = {
                 Button(onClick = {
-                    if (newCategoryName.isNotBlank()) {
-                        onAddCategory(newCategoryName)
-                        newCategoryName = ""
-                        showAddCategoryDialog = false
+                    if (newName.isNotBlank()) {
+                        if (showAddCatDialog) onAddCategory(newName) else onAddVendor(newName)
+                        newName = ""; showAddCatDialog = false; showAddVenDialog = false
                     }
                 }) { Text("Add") }
             },
-            dismissButton = { TextButton(onClick = { showAddCategoryDialog = false }) { Text("Cancel") } }
+            dismissButton = { TextButton(onClick = { showAddCatDialog = false; showAddVenDialog = false }) { Text("Cancel") } }
         )
+    }
+
+    if (showDatePicker) {
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = {
+                TextButton(onClick = { showDatePicker = false }) { Text("OK") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDatePicker = false }) { Text("Cancel") }
+            }
+        ) {
+            DatePicker(state = datePickerState)
+        }
     }
 
     AlertDialog(onDismissRequest = onDismiss, title = { Text("Expense Details") }, text = {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-            OutlinedTextField(v, { v = it }, label = { Text("Vendor") }, modifier = Modifier.fillMaxWidth())
-            
-            Box(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
-                    Text(categories.find { it.id == selectedCategoryId }?.name ?: "Select Category")
+            // Vendor Dropdown
+            Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                OutlinedButton(onClick = { venExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text(vendors.find { it.remoteId == selectedVendorId }?.name ?: "Select Vendor")
                 }
-                DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                    categories.forEach { category ->
-                        DropdownMenuItem(
-                            text = { Text(category.name) },
-                            onClick = {
-                                selectedCategoryId = category.id
-                                expanded = false
-                            }
-                        )
+                DropdownMenu(expanded = venExpanded, onDismissRequest = { venExpanded = false }) {
+                    vendors.forEach { v ->
+                        DropdownMenuItem(text = { Text(v.name) }, onClick = { selectedVendorId = v.remoteId; venExpanded = false })
                     }
                     HorizontalDivider()
-                    DropdownMenuItem(
-                        text = { Text("+ Add New Category", color = MaterialTheme.colorScheme.primary) },
-                        onClick = {
-                            expanded = false
-                            showAddCategoryDialog = true
-                        }
-                    )
+                    DropdownMenuItem(text = { Text("+ Add New Vendor", color = MaterialTheme.colorScheme.primary) }, 
+                        onClick = { venExpanded = false; showAddVenDialog = true })
                 }
             }
 
-            OutlinedTextField(a, { a = it }, label = { Text("Amount") }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(d, { d = it }, label = { Text("Date") }, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(m, { m = it }, label = { Text("Memo") }, modifier = Modifier.fillMaxWidth())
+            // Category Dropdown
+            Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                OutlinedButton(onClick = { catExpanded = true }, modifier = Modifier.fillMaxWidth()) {
+                    Text(categories.find { it.remoteId == selectedCategoryId }?.name ?: "Select Category")
+                }
+                DropdownMenu(expanded = catExpanded, onDismissRequest = { catExpanded = false }) {
+                    categories.forEach { c ->
+                        DropdownMenuItem(text = { Text(c.name) }, onClick = { selectedCategoryId = c.remoteId; catExpanded = false })
+                    }
+                    HorizontalDivider()
+                    DropdownMenuItem(text = { Text("+ Add New Category", color = MaterialTheme.colorScheme.primary) }, 
+                        onClick = { catExpanded = false; showAddCatDialog = true })
+                }
+            }
+
+            OutlinedTextField(amount, { amount = it }, label = { Text("Amount") }, modifier = Modifier.fillMaxWidth())
+            
+            // Date Picker Trigger
+            OutlinedButton(onClick = { showDatePicker = true }, modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                Icon(Icons.Default.DateRange, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("Date: $formattedDate")
+            }
+
+            OutlinedTextField(memo, { memo = it }, label = { Text("Memo") }, modifier = Modifier.fillMaxWidth())
         }
     }, confirmButton = {
-        Button(onClick = { onSave(v, selectedCategoryId, a, d, m) }) { Text("Save") }
+        Button(onClick = { onSave(selectedVendorId, selectedCategoryId, amount, formattedDate, memo) }) { Text("Save") }
     }, dismissButton = {
         TextButton(onClick = onDismiss) { Text("Cancel") }
     })

@@ -10,12 +10,13 @@ interface ExpenseDao {
 
     @Transaction
     @Query("""
-        SELECT expenses.*, categories.name as categoryName 
+        SELECT expenses.*, categories.name as categoryName, vendors.name as vendorName
         FROM expenses 
-        LEFT JOIN categories ON expenses.categoryId = categories.id 
+        LEFT JOIN categories ON expenses.categoryId = categories.remoteId 
+        LEFT JOIN vendors ON expenses.vendorId = vendors.remoteId
         WHERE expenses.userId = :userId
     """)
-    fun getExpensesWithCategoryForUser(userId: String): Flow<List<ExpenseWithCategory>>
+    fun getExpensesWithDetailsForUser(userId: String): Flow<List<ExpenseWithDetails>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(expense: Expense)
@@ -28,7 +29,4 @@ interface ExpenseDao {
 
     @Delete
     suspend fun delete(expense: Expense)
-
-    @Query("DELETE FROM expenses WHERE localId = :localId")
-    suspend fun deleteById(localId: Int)
 }
