@@ -28,5 +28,9 @@ abstract class AppDatabase : RoomDatabase() {
                 instance
             }
         }
+
+        fun setTestInstance(database: AppDatabase?) {
+            INSTANCE = database
+        }
     }
 }

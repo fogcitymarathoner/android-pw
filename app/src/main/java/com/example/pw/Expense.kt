@@ -20,3 +20,8 @@ data class ExpenseWithDetails(
     val categoryName: String?,
     val vendorName: String?
 )
+
+fun formatPrice(amount: String): String {
+    val doubleValue = amount.toDoubleOrNull() ?: 0.0
+    return String.format(java.util.Locale.US, "%.2f", doubleValue)
+}

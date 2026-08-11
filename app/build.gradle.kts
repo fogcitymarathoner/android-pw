@@ -6,6 +6,7 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.google.services)
     alias(libs.plugins.google.devtools.ksp)
+    id("jacoco")
 }
 
 val localProperties = Properties()
@@ -32,6 +33,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            enableUnitTestCoverage = true
+            enableAndroidTestCoverage = true
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(
@@ -59,7 +64,6 @@ android {
 }
 
 dependencies {
-
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
@@ -92,4 +96,41 @@ dependencies {
     implementation(libs.androidx.credentials.play.services.auth)
     implementation(libs.googleid)
     implementation(libs.androidx.navigation.compose)
+}
+
+jacoco {
+    toolVersion = "0.8.12"
+}
+
+val fileFilter = listOf(
+    "**/R.class", "**/R$*.class", "**/BuildConfig.*", "**/Manifest*.*",
+    "**/*Test*.*", "android/**/*.*", "**/Lambda$*.class", "**/Lambda.class",
+    "**/*Lambda.class", "**/*Lambda*.class", "**/*_LifecycleAdapter.class",
+    "**/*_ViewBinding*.*", "**/*_ViewBinding.class", "**/*MembersInjector*.*",
+    "**/*_MembersInjector.class", "**/*_Factory*.*", "**/*_Factory.class",
+    "**/*_Provide*Factory*.*", "**/*_Provide*Factory.class", "**/*Extensions*.*",
+    "**/*$Result.class", "**/*$Result$*.class"
+)
+
+tasks.register<JacocoReport>("jacocoTestReport") {
+    dependsOn("testDebugUnitTest")
+
+    reports {
+        xml.required.set(true)
+        html.required.set(true)
+    }
+
+    val debugTree = fileTree("${project.layout.buildDirectory.get()}/tmp/kotlin-classes/debug") {
+        exclude(fileFilter)
+    }
+    val mainSrc = "${project.projectDir}/src/main/java"
+
+    sourceDirectories.setFrom(files(mainSrc))
+    classDirectories.setFrom(files(debugTree))
+    executionData.setFrom(fileTree(project.layout.buildDirectory.get()) {
+        include(
+            "outputs/unit_test_code_coverage/debugUnitTest/testDebugUnitTest.exec",
+            "outputs/code_coverage/debugAndroidTest/connected/*/coverage.ec"
+        )
+    })
 }

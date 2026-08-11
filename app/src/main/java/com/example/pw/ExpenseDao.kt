@@ -21,6 +21,9 @@ interface ExpenseDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(expense: Expense)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(expenses: List<Expense>)
+
     @Query("SELECT * FROM expenses WHERE remoteId = :remoteId LIMIT 1")
     suspend fun getByExpenseRemoteId(remoteId: String): Expense?
 
@@ -29,4 +32,13 @@ interface ExpenseDao {
 
     @Delete
     suspend fun delete(expense: Expense)
+
+    @Query("SELECT COUNT(*) FROM expenses WHERE vendorId = :vendorId")
+    suspend fun getExpenseCountForVendor(vendorId: String): Int
+
+    @Query("SELECT COUNT(*) FROM expenses WHERE categoryId = :categoryId")
+    suspend fun getExpenseCountForCategory(categoryId: String): Int
+
+    @Query("DELETE FROM expenses WHERE userId = :userId")
+    suspend fun deleteAllForUser(userId: String)
 }

@@ -9,3 +9,7 @@ data class Category(
     val name: String,
     val userId: String
 )
+
+fun List<Category>.sortByName(): List<Category> {
+    return this.sortedBy { it.name.lowercase() }
+}

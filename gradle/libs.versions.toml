@@ -8,7 +8,6 @@ espressoCore = "3.7.0"
 lifecycleRuntimeKtx = "2.10.0"
 activityCompose = "1.13.0"
 composeBom = "2024.04.01"
-# Add these two
 room = "2.6.1"
 ksp = "2.0.0-1.0.21"
 googleServices = "4.4.2"
@@ -16,6 +15,7 @@ firebaseBom = "33.9.0"
 playServicesAuth = "21.3.0"
 credentials = "1.2.2"
 navigationCompose = "2.8.8"
+jacoco = "0.8.12"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
