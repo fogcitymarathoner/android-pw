@@ -20,6 +20,12 @@ jobs:
         distribution: 'temurin'
         cache: gradle
 
+    - name: Create Google Services dummy file
+      run: echo '{"project_info":{"project_number":"123456789","project_id":"dummy-id"},"client":[{"client_info":{"mobilesdk_app_id":"1:123456789:android:123456789","android_client_info":{"package_name":"com.example.pw"}},"api_key":[{"current_key":"dummy-key"}],"services":{"appinvite_service":{"other_platform_oauth_client":[]}}}] ,"configuration_version":"1"}' > app/google-services.json
+
+    - name: Create dummy local.properties
+      run: echo "GOOGLE_WEB_CLIENT_ID=dummy-client-id" > local.properties
+
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
