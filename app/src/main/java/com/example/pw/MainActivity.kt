@@ -304,7 +304,8 @@ fun PasswordsScreen(userId: String, userEmail: String, activity: MainActivity) {
                             val vendor = child.child("vendor").value?.toString() ?: ""
                             val account = child.child("account").value?.toString() ?: ""
                             val pw = child.child("pw").value?.toString() ?: ""
-                            list.add(PwEntity(id = child.key, vendor = vendor, account = account, pw = pw))
+                            val memo = child.child("memo").value?.toString() ?: ""
+                            list.add(PwEntity(id = child.key, vendor = vendor, account = account, pw = pw, memo = memo))
                         }
                         passwords = list
                     }
@@ -321,24 +322,24 @@ fun PasswordsScreen(userId: String, userEmail: String, activity: MainActivity) {
     }
 
     if (showAddDialog) {
-        EntryDialog(title = "Add Password", onDismiss = { showAddDialog = false }, onSave = { v, a, p ->
+        EntryDialog(title = "Add Password", onDismiss = { showAddDialog = false }, onSave = { v, a, p, m ->
             if (isMockUser) {
-                passwords = passwords + PwEntity(id = UUID.randomUUID().toString(), vendor = v, account = a, pw = p)
+                passwords = passwords + PwEntity(id = UUID.randomUUID().toString(), vendor = v, account = a, pw = p, memo = m)
             } else {
-                Firebase.database.reference.child("users").child(userId).child("passwords").push().setValue(PwEntity(vendor = v, account = a, pw = p))
+                Firebase.database.reference.child("users").child(userId).child("passwords").push().setValue(PwEntity(vendor = v, account = a, pw = p, memo = m))
             }
             showAddDialog = false
         })
     }
 
     entryToEdit?.let { entity ->
-        EntryDialog(title = "Edit Password", initialVendor = entity.vendor, initialAccount = entity.account, initialPassword = entity.pw,
-            onDismiss = { entryToEdit = null }, onSave = { v, a, p ->
+        EntryDialog(title = "Edit Password", initialVendor = entity.vendor, initialAccount = entity.account, initialPassword = entity.pw, initialMemo = entity.memo,
+            onDismiss = { entryToEdit = null }, onSave = { v, a, p, m ->
                 if (isMockUser) {
-                    passwords = passwords.map { if (it.id == entity.id) it.copy(vendor = v, account = a, pw = p) else it }
+                    passwords = passwords.map { if (it.id == entity.id) it.copy(vendor = v, account = a, pw = p, memo = m) else it }
                 } else {
                     entity.id?.let { id ->
-                        Firebase.database.reference.child("users").child(userId).child("passwords").child(id).setValue(PwEntity(vendor = v, account = a, pw = p))
+                        Firebase.database.reference.child("users").child(userId).child("passwords").child(id).setValue(PwEntity(vendor = v, account = a, pw = p, memo = m))
                     }
                 }
                 entryToEdit = null
@@ -1031,7 +1032,15 @@ fun PasswordCard(item: PwEntity, onCopy: () -> Unit, onView: () -> Unit, onEdit:
         Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(text = item.vendor, style = MaterialTheme.typography.titleLarge)
-                if (item.account.isNotBlank()) Text(text = item.account, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (item.account.isNotBlank()) {
+                        Text(text = item.account, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (item.memo.isNotBlank()) {
+                        if (item.account.isNotBlank()) Text(" • ", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Icon(Icons.Default.HelpOutline, contentDescription = "Has Memo", modifier = Modifier.size(14.dp), tint = MaterialTheme.colorScheme.primary)
+                    }
+                }
             }
             Row {
                 IconButton(onClick = onCopy, modifier = Modifier.testTag("btn_copy")) { Icon(Icons.Default.ContentCopy, null) }
@@ -1081,10 +1090,11 @@ fun SubscriptionCard(item: Subscription, onView: () -> Unit, onEdit: () -> Unit,
 }
 
 @Composable
-fun EntryDialog(title: String, initialVendor: String = "", initialAccount: String = "", initialPassword: String = "", onDismiss: () -> Unit, onSave: (String, String, String) -> Unit) {
+fun EntryDialog(title: String, initialVendor: String = "", initialAccount: String = "", initialPassword: String = "", initialMemo: String = "", onDismiss: () -> Unit, onSave: (String, String, String, String) -> Unit) {
     var vendor by remember { mutableStateOf(initialVendor) }
     var account by remember { mutableStateOf(initialAccount) }
     var password by remember { mutableStateOf(initialPassword) }
+    var memo by remember { mutableStateOf(initialMemo) }
     var originalPassword by remember { mutableStateOf(initialPassword) }
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
@@ -1102,6 +1112,13 @@ fun EntryDialog(title: String, initialVendor: String = "", initialAccount: Strin
                 onValueChange = { account = it }, 
                 label = { Text("Account") }, 
                 modifier = Modifier.fillMaxWidth().testTag("input_account")
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = memo, 
+                onValueChange = { memo = it }, 
+                label = { Text("Memo (Questions/Answers)") }, 
+                modifier = Modifier.fillMaxWidth().testTag("input_memo")
             )
             Spacer(modifier = Modifier.height(8.dp))
             if (title.contains("Edit")) {
@@ -1130,7 +1147,7 @@ fun EntryDialog(title: String, initialVendor: String = "", initialAccount: Strin
     }, 
     confirmButton = { 
         Button(
-            onClick = { if (vendor.isNotBlank() && password.isNotBlank()) onSave(vendor, account, password) },
+            onClick = { if (vendor.isNotBlank() && password.isNotBlank()) onSave(vendor, account, password, memo) },
             modifier = Modifier.testTag("dialog_save")
         ) { Text("Save") } 
     }, 
@@ -1336,6 +1353,11 @@ fun ViewPasswordDialog(entity: PwEntity, onDismiss: () -> Unit, onCopy: () -> Un
     AlertDialog(onDismissRequest = onDismiss, title = { Text(entity.vendor, modifier = Modifier.testTag("view_title")) }, text = {
         Column {
             if (entity.account.isNotBlank()) Text("Account: ${entity.account}", style = MaterialTheme.typography.bodyLarge)
+            if (entity.memo.isNotBlank()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("Memo:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                Text(entity.memo, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.testTag("view_memo"))
+            }
             Spacer(modifier = Modifier.height(16.dp))
             Text("Password:", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
             Text(entity.pw, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, modifier = Modifier.testTag("view_password"))

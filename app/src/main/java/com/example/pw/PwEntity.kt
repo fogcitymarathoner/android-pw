@@ -4,5 +4,6 @@ data class PwEntity(
     val id: String? = null,
     val vendor: String = "",
     val account: String = "",
-    val pw: String = ""
+    val pw: String = "",
+    val memo: String = ""
 )

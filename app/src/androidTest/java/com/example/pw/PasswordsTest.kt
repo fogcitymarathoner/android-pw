@@ -174,6 +174,35 @@ class PasswordsTest {
         composeTestRule.onNodeWithText(uniqueVendor).assertDoesNotExist()
     }
 
+    @Test
+    fun testMemoFieldPersistence() {
+        loginAsMockUser()
+
+        val uniqueVendor = "MemoTest-${UUID.randomUUID().toString().take(5)}"
+        val secretMemo = "Secret answer: 42"
+        
+        // Add password with memo
+        composeTestRule.onNodeWithTag("fab_add").performClick()
+        composeTestRule.onNodeWithTag("input_vendor").performTextInput(uniqueVendor)
+        composeTestRule.onNodeWithTag("input_password").performTextInput("pass")
+        composeTestRule.onNodeWithTag("input_memo").performTextInput(secretMemo)
+        composeTestRule.onNodeWithTag("dialog_save").performClick()
+
+        // Verify the "Has Memo" icon appears in the card
+        composeTestRule.waitUntil(10000) {
+            composeTestRule.onAllNodesWithContentDescription("Has Memo").fetchSemanticsNodes().isNotEmpty()
+        }
+        composeTestRule.onNodeWithContentDescription("Has Memo").assertIsDisplayed()
+
+        // Open view dialog and verify memo content
+        composeTestRule.onNode(
+            hasTestTag("btn_view") and hasAnyAncestor(hasTestTag("password_card_$uniqueVendor"))
+        ).performClick()
+
+        composeTestRule.onNodeWithTag("view_memo").assertTextEquals(secretMemo)
+        composeTestRule.onNodeWithTag("btn_view_close").performClick()
+    }
+
     private fun addMockPassword(vendor: String, account: String, pass: String) {
         composeTestRule.onNodeWithTag("fab_add").performClick()
         composeTestRule.onNodeWithTag("input_vendor").performTextInput(vendor)
