@@ -4,10 +4,11 @@ import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
-import com.example.pw.BuildConfig
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -27,6 +28,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -80,73 +82,75 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            PwTheme {
-                val navController = rememberNavController()
-                val initialUser = remember { Firebase.auth.currentUser }
-                var currentUserUid by remember { mutableStateOf(initialUser?.uid) }
-                var currentUserEmail by remember { mutableStateOf(initialUser?.email) }
+        try {
+            Log.e("PW_AUTH", "MainActivity onCreate started")
+            setContent {
+                PwTheme {
+                    val navController = rememberNavController()
+                    val initialUser = remember { try { Firebase.auth.currentUser } catch(e: Exception) { null } }
+                    var currentUserUid by remember { mutableStateOf(initialUser?.uid) }
+                    var currentUserEmail by remember { mutableStateOf(initialUser?.email) }
 
-                DisposableEffect(Unit) {
-                    val listener = FirebaseAuth.AuthStateListener { auth ->
-                        val user = auth.currentUser
-                        Log.d("PW_AUTH", "AuthStateListener: user=${user?.uid}, current=$currentUserUid")
-                        if (user?.uid != currentUserUid) {
-                            currentUserUid = user?.uid
-                            currentUserEmail = user?.email
-                            if (user != null) {
-                                Log.d("PW_AUTH", "Navigating to passwords")
+                    DisposableEffect(Unit) {
+                        val listener = FirebaseAuth.AuthStateListener { auth ->
+                            val user = auth.currentUser
+                            if (user?.uid != currentUserUid) {
+                                currentUserUid = user?.uid
+                                currentUserEmail = user?.email
+                                if (user != null) {
+                                    navController.navigate("passwords") {
+                                        popUpTo(0) { inclusive = true }
+                                    }
+                                } else {
+                                    navController.navigate("auth") {
+                                        popUpTo(0) { inclusive = true }
+                                    }
+                                }
+                            }
+                        }
+                        Firebase.auth.addAuthStateListener(listener)
+                        onDispose { Firebase.auth.removeAuthStateListener(listener) }
+                    }
+
+                    NavHost(
+                        navController = navController,
+                        startDestination = if (initialUser == null) "auth" else "passwords"
+                    ) {
+                        composable("auth") { 
+                            AuthScreen(onDebugLogin = { uid, email ->
+                                currentUserUid = uid
+                                currentUserEmail = email
                                 navController.navigate("passwords") {
                                     popUpTo(0) { inclusive = true }
                                 }
-                            } else {
-                                Log.d("PW_AUTH", "Navigating to auth")
-                                navController.navigate("auth") {
-                                    popUpTo(0) { inclusive = true }
+                            }) 
+                        }
+                        composable("passwords") {
+                            currentUserUid?.let { uid ->
+                                MainLayout(userId = uid, navController) { 
+                                    PasswordsScreen(userId = uid, userEmail = currentUserEmail ?: "", activity = this@MainActivity) 
                                 }
                             }
                         }
-                    }
-                    Firebase.auth.addAuthStateListener(listener)
-                    onDispose { Firebase.auth.removeAuthStateListener(listener) }
-                }
-
-                NavHost(
-                    navController = navController,
-                    startDestination = if (initialUser == null) "auth" else "passwords"
-                ) {
-                    composable("auth") { 
-                        AuthScreen(onDebugLogin = { uid, email ->
-                            currentUserUid = uid
-                            currentUserEmail = email
-                            navController.navigate("passwords") {
-                                popUpTo(0) { inclusive = true }
-                            }
-                        }) 
-                    }
-                    composable("passwords") {
-                        currentUserUid?.let { uid ->
-                            MainLayout(userId = uid, navController) { 
-                                PasswordsScreen(userId = uid, userEmail = currentUserEmail ?: "", activity = this@MainActivity) 
+                        composable("expenses") {
+                            currentUserUid?.let { uid ->
+                                MainLayout(userId = uid, navController) { 
+                                    ExpensesScreen(userId = uid, userEmail = currentUserEmail ?: "") 
+                                }
                             }
                         }
-                    }
-                    composable("expenses") {
-                        currentUserUid?.let { uid ->
-                            MainLayout(userId = uid, navController) { 
-                                ExpensesScreen(userId = uid, userEmail = currentUserEmail ?: "") 
-                            }
-                        }
-                    }
-                    composable("subscriptions") {
-                        currentUserUid?.let { uid ->
-                            MainLayout(userId = uid, navController) { 
-                                SubscriptionsScreen(userId = uid, userEmail = currentUserEmail ?: "")
+                        composable("subscriptions") {
+                            currentUserUid?.let { uid ->
+                                MainLayout(userId = uid, navController) { 
+                                    SubscriptionsScreen(userId = uid, userEmail = currentUserEmail ?: "")
+                                }
                             }
                         }
                     }
                 }
             }
+        } catch (e: Exception) {
+            Log.e("PW_AUTH", "FATAL CRASH in onCreate", e)
         }
     }
 }
@@ -214,7 +218,14 @@ fun MainLayout(
 fun AuthScreen(onDebugLogin: (String, String) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val credentialManager = androidx.credentials.CredentialManager.create(context)
+    var statusText by remember { mutableStateOf("Ready to Sign In") }
+    
+    val credentialManager = try {
+        androidx.credentials.CredentialManager.create(context)
+    } catch (e: Exception) {
+        statusText = "Error creating CredentialManager: ${e.message}"
+        null
+    }
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -222,29 +233,57 @@ fun AuthScreen(onDebugLogin: (String, String) -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(text = "Personal Assistant", style = MaterialTheme.typography.headlineMedium)
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(text = statusText, color = MaterialTheme.colorScheme.secondary)
         Spacer(modifier = Modifier.height(32.dp))
         Button(onClick = {
+            Log.e("PW_AUTH", "Sign in with Google button clicked - v3")
+            statusText = "Sign-in button clicked..."
+            safeToast(context, "Sign-in started...")
+            
+            if (credentialManager == null) {
+                statusText = "CredentialManager is NULL"
+                return@Button
+            }
+
             scope.launch {
                 try {
+                    statusText = "Generating nonce..."
                     val rawNonce = UUID.randomUUID().toString()
                     val bytes = rawNonce.toByteArray()
                     val md = java.security.MessageDigest.getInstance("SHA-256")
                     val digest = md.digest(bytes)
                     val hashedNonce = digest.fold("") { str, it -> str + "%02x".format(it) }
 
+                    statusText = "Creating request for ID: ${com.example.pw.BuildConfig.GOOGLE_WEB_CLIENT_ID}"
+
                     val googleIdOption = GetGoogleIdOption.Builder()
                         .setFilterByAuthorizedAccounts(false)
-                        .setServerClientId(BuildConfig.GOOGLE_WEB_CLIENT_ID)
+                        .setServerClientId(com.example.pw.BuildConfig.GOOGLE_WEB_CLIENT_ID)
                         .setNonce(hashedNonce)
-                        .setAutoSelectEnabled(true)
+                        .setAutoSelectEnabled(false) 
                         .build()
 
+                    statusText = "Requesting Auth..."
+                    
                     val request = androidx.credentials.GetCredentialRequest.Builder()
                         .addCredentialOption(googleIdOption)
                         .build()
 
-                    val result = credentialManager.getCredential(context, request)
+                    val result = try {
+                        credentialManager.getCredential(context as android.app.Activity, request)
+                    } catch (e: androidx.credentials.exceptions.GetCredentialException) {
+                        Log.e("PW_AUTH", "Full Exception: ", e)
+                        statusText = "Error: ${e::class.java.simpleName}\n${e.message}"
+                        return@launch
+                    }
+catch (e: Exception) {
+                        statusText = "System error: ${e.message}"
+                        return@launch
+                    }
+
                     val credential = result.credential
+                    statusText = "Processing credential..."
 
                     val googleIdTokenCredential = try {
                         if (credential is GoogleIdTokenCredential) {
@@ -252,14 +291,22 @@ fun AuthScreen(onDebugLogin: (String, String) -> Unit) {
                         } else {
                             GoogleIdTokenCredential.createFrom(credential.data)
                         }
-                    } catch (e: Exception) { null }
+                    } catch (e: Exception) { 
+                        statusText = "Token conversion error"
+                        null 
+                    }
 
                     if (googleIdTokenCredential != null) {
+                        statusText = "Firebase sign-in..."
                         val firebaseCredential = GoogleAuthProvider.getCredential(googleIdTokenCredential.idToken, null)
                         Firebase.auth.signInWithCredential(firebaseCredential).await()
+                        statusText = "Success!"
+                    } else {
+                        statusText = "Token extraction failed"
                     }
                 } catch (e: Exception) {
-                    safeToast(context, "Sign-in failed: ${e.message}", Toast.LENGTH_LONG)
+                    statusText = "Fatal Error: ${e.message}"
+                    safeToast(context, "Failed: ${e.message}", Toast.LENGTH_LONG)
                 }
             }
         }) {
@@ -880,6 +927,8 @@ fun ExpensesScreen(userId: String, userEmail: String) {
 fun SubscriptionsScreen(userId: String, userEmail: String) {
     var subscriptions by remember { mutableStateOf(listOf<Subscription>()) }
     var searchQuery by remember { mutableStateOf("") }
+    var selectedPeriodFilter by remember { mutableStateOf("all") }
+    var viewMode by remember { mutableStateOf("list") } // "list" or "calendar"
     var showAddDialog by remember { mutableStateOf(false) }
     var entryToEdit by remember { mutableStateOf<Subscription?>(null) }
     var entryToDelete by remember { mutableStateOf<Subscription?>(null) }
@@ -901,8 +950,11 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
                             val account = child.child("account").value?.toString() ?: ""
                             val amount = child.child("amount").value?.toString() ?: ""
                             val dueDate = child.child("dueDate").value?.toString() ?: ""
+                            val period = child.child("period").value?.toString() ?: "monthly"
+                            val month = child.child("month").value?.toString() ?: ""
+                            val calendarDate = child.child("calendarDate").value?.toString() ?: ""
                             val memo = child.child("memo").value?.toString() ?: ""
-                            list.add(Subscription(id = child.key, name = name, account = account, amount = amount, dueDate = dueDate, memo = memo))
+                            list.add(Subscription(id = child.key, name = name, account = account, amount = amount, dueDate = dueDate, period = period, month = month, calendarDate = calendarDate, memo = memo))
                         }
                         subscriptions = list
                     }
@@ -914,27 +966,41 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
         }
     }
 
-    val filtered = subscriptions.filter { it.name.contains(searchQuery, ignoreCase = true) || it.account.contains(searchQuery, ignoreCase = true) }
+    val filtered = subscriptions
+        .filter { 
+            (it.name.contains(searchQuery, ignoreCase = true) || it.account.contains(searchQuery, ignoreCase = true)) &&
+            (selectedPeriodFilter == "all" || it.period.lowercase() == selectedPeriodFilter)
+        }
+        .sortByDueDate()
 
     if (showAddDialog) {
-        SubscriptionDialog(onDismiss = { showAddDialog = false }, onSave = { n, a, am, d, m ->
+        SubscriptionDialog(onDismiss = { showAddDialog = false }, onSave = { n, a, am, d, p, mth, cd, m ->
             if (isMockUser) {
-                subscriptions = subscriptions + Subscription(id = UUID.randomUUID().toString(), name = n, account = a, amount = am, dueDate = d, memo = m)
+                subscriptions = subscriptions + Subscription(id = UUID.randomUUID().toString(), name = n, account = a, amount = am, dueDate = d, period = p, month = mth, calendarDate = cd, memo = m)
             } else {
-                Firebase.database.reference.child("users").child(userId).child("subscriptions").push().setValue(Subscription(name = n, account = a, amount = am, dueDate = d, memo = m))
+                Firebase.database.reference.child("users").child(userId).child("subscriptions").push().setValue(Subscription(name = n, account = a, amount = am, dueDate = d, period = p, month = mth, calendarDate = cd, memo = m))
             }
             showAddDialog = false
         })
     }
 
     entryToEdit?.let { item ->
-        SubscriptionDialog(initialName = item.name, initialAccount = item.account, initialAmount = item.amount, initialDueDate = item.dueDate, initialMemo = item.memo,
-            onDismiss = { entryToEdit = null }, onSave = { n, a, am, d, m ->
+        SubscriptionDialog(
+            initialName = item.name, 
+            initialAccount = item.account, 
+            initialAmount = item.amount, 
+            initialDueDate = item.dueDate, 
+            initialPeriod = item.period,
+            initialMonth = item.month,
+            initialCalendarDate = item.calendarDate,
+            initialMemo = item.memo,
+            onDismiss = { entryToEdit = null }, 
+            onSave = { n, a, am, d, p, mth, cd, m ->
                 if (isMockUser) {
-                    subscriptions = subscriptions.map { if (it.id == item.id) it.copy(name = n, account = a, amount = am, dueDate = d, memo = m) else it }
+                    subscriptions = subscriptions.map { if (it.id == item.id) it.copy(name = n, account = a, amount = am, dueDate = d, period = p, month = mth, calendarDate = cd, memo = m) else it }
                 } else {
                     item.id?.let { id ->
-                        Firebase.database.reference.child("users").child(userId).child("subscriptions").child(id).setValue(Subscription(name = n, account = a, amount = am, dueDate = d, memo = m))
+                        Firebase.database.reference.child("users").child(userId).child("subscriptions").child(id).setValue(Subscription(name = n, account = a, amount = am, dueDate = d, period = p, month = mth, calendarDate = cd, memo = m))
                     }
                 }
                 entryToEdit = null
@@ -985,20 +1051,210 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
         }
     ) { padding ->
         Column(modifier = Modifier.padding(padding).padding(16.dp)) {
-            TopHeader(userEmail, "Subscriptions")
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = "Subscriptions v2.1", 
+                    style = MaterialTheme.typography.headlineMedium,
+                    modifier = Modifier.testTag("header_subscriptions")
+                )
+                TextButton(onClick = { Firebase.auth.signOut() }) { Text("Sign Out") }
+            }
+            Text(text = "Logged in as: $userEmail", style = MaterialTheme.typography.bodySmall)
+            Spacer(modifier = Modifier.height(16.dp))
+
             SearchBar(searchQuery) { searchQuery = it }
-            LazyColumn {
-                items(filtered, key = { it.id ?: "" }) { item ->
-                    SubscriptionCard(
-                        item = item, 
-                        onView = { entryToView = item },
-                        onEdit = { entryToEdit = item }, 
-                        onDelete = { entryToDelete = item }
+            
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                // Period Filter Chips
+                Row(modifier = Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("all", "monthly", "annual").forEach { p ->
+                        FilterChip(
+                            selected = selectedPeriodFilter == p,
+                            onClick = { selectedPeriodFilter = p },
+                            label = { Text(p.replaceFirstChar { it.uppercase() }) },
+                            modifier = Modifier.testTag("filter_sub_$p")
+                        )
+                    }
+                }
+
+                // View Mode Toggle
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    IconButton(onClick = { viewMode = "list" }, 
+                        modifier = Modifier.background(if(viewMode == "list") MaterialTheme.colorScheme.primaryContainer else Color.Transparent, CircleShape)) {
+                        Icon(Icons.Default.List, contentDescription = "List View")
+                    }
+                    IconButton(onClick = { viewMode = "calendar" },
+                        modifier = Modifier.background(if(viewMode == "calendar") MaterialTheme.colorScheme.primaryContainer else Color.Transparent, CircleShape)) {
+                        Icon(Icons.Default.DateRange, contentDescription = "Calendar View")
+                    }
+                }
+            }
+
+            if (viewMode == "list") {
+                LazyColumn(modifier = Modifier.weight(1f)) {
+                    items(filtered, key = { it.id ?: "" }) { item ->
+                        SubscriptionCard(
+                            item = item, 
+                            onView = { entryToView = item },
+                            onEdit = { entryToEdit = item }, 
+                            onDelete = { entryToDelete = item }
+                        )
+                    }
+                }
+            } else {
+                Box(modifier = Modifier.weight(1f)) {
+                    SubscriptionCalendarView(
+                        subscriptions = filtered,
+                        onViewItem = { entryToView = it }
                     )
                 }
             }
         }
     }
+}
+
+@Composable
+fun SubscriptionCalendarView(subscriptions: List<Subscription>, onViewItem: (Subscription) -> Unit) {
+    var calendarState by remember { mutableStateOf(java.util.Calendar.getInstance()) }
+    val currentMonth = calendarState.get(java.util.Calendar.MONTH)
+    val monthName = java.text.SimpleDateFormat("MMMM yyyy", java.util.Locale.getDefault()).format(calendarState.time)
+
+    val daysInMonth = calendarState.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
+    val firstDayOfMonth = (calendarState.clone() as java.util.Calendar).apply { set(java.util.Calendar.DAY_OF_MONTH, 1) }
+    val firstDayOfWeek = firstDayOfMonth.get(java.util.Calendar.DAY_OF_WEEK)
+    
+    val days = mutableListOf<Int?>()
+    // Padding for first week
+    repeat(firstDayOfWeek - 1) { days.add(null) }
+    for (i in 1..daysInMonth) { days.add(i) }
+    // Padding for last week to complete the grid
+    while (days.size % 7 != 0) { days.add(null) }
+
+    Column(modifier = Modifier.fillMaxSize().padding(vertical = 8.dp)) {
+        // Month Navigation Header
+        Surface(
+            tonalElevation = 2.dp,
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(8.dp), 
+                horizontalArrangement = Arrangement.SpaceBetween, 
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(onClick = {
+                    val newCal = calendarState.clone() as java.util.Calendar
+                    newCal.add(java.util.Calendar.MONTH, -1)
+                    calendarState = newCal
+                }) { Icon(Icons.Default.ChevronLeft, "Prev") }
+                
+                Text(text = monthName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                
+                IconButton(onClick = {
+                    val newCal = calendarState.clone() as java.util.Calendar
+                    newCal.add(java.util.Calendar.MONTH, 1)
+                    calendarState = newCal
+                }) { Icon(Icons.Default.ChevronRight, "Next") }
+            }
+        }
+
+        // Days of Week Header
+        Row(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
+            listOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat").forEach {
+                Text(
+                    text = it, 
+                    modifier = Modifier.weight(1f), 
+                    textAlign = androidx.compose.ui.text.style.TextAlign.Center, 
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.secondary
+                )
+            }
+        }
+
+        // Calendar Grid
+        val rows = days.chunked(7)
+        Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+            rows.forEach { rowDays ->
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    rowDays.forEach { day ->
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(100.dp) // Fixed height is more stable than aspectRatio in nested scroll
+                                .border(0.2.dp, Color.LightGray)
+                                .background(if (day != null && isToday(day, calendarState)) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) else Color.Transparent)
+                        ) {
+                            if (day != null) {
+                                Text(
+                                    text = day.toString(), 
+                                    modifier = Modifier.padding(4.dp), 
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontWeight = if (isToday(day, calendarState)) FontWeight.Bold else FontWeight.Normal
+                                )
+                                
+                                val daySubs = subscriptions.filter { sub ->
+                                    val dueDay = Regex("(\\d+)").find(sub.dueDate)?.value?.toIntOrNull() ?: -1
+                                    if (sub.period.lowercase() == "annual") {
+                                        val months = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+                                        val subMonth = months.indexOf(sub.dueDate.split(" ").firstOrNull()).takeIf { it != -1 } ?: -1
+                                        subMonth == currentMonth && dueDay == day
+                                    } else {
+                                        dueDay == day
+                                    }
+                                }
+
+                                Column(modifier = Modifier.padding(top = 20.dp, start = 2.dp, end = 2.dp)) {
+                                    daySubs.take(2).forEach { sub ->
+                                        Surface(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(vertical = 1.dp)
+                                                .clickable(
+                                                    indication = null,
+                                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                                                ) { onViewItem(sub) },
+                                            color = MaterialTheme.colorScheme.secondaryContainer,
+                                            shape = androidx.compose.foundation.shape.RoundedCornerShape(2.dp)
+                                        ) {
+                                            Text(
+                                                text = sub.name, 
+                                                style = MaterialTheme.typography.labelSmall,
+                                                maxLines = 1,
+                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                                modifier = Modifier.padding(1.dp),
+                                                fontSize = 8.sp
+                                            )
+                                        }
+                                    }
+                                    if (daySubs.size > 2) {
+                                        Text(
+                                            text = "+${daySubs.size - 2}", 
+                                            style = MaterialTheme.typography.labelSmall, 
+                                            fontSize = 7.sp,
+                                            modifier = Modifier.padding(start = 2.dp)
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Fill remaining boxes in last row if needed
+                    if (rowDays.size < 7) {
+                        repeat(7 - rowDays.size) {
+                            Box(modifier = Modifier.weight(1f).height(100.dp))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fun isToday(day: Int, calendar: java.util.Calendar): Boolean {
+    val today = java.util.Calendar.getInstance()
+    return today.get(java.util.Calendar.DAY_OF_MONTH) == day &&
+           today.get(java.util.Calendar.MONTH) == calendar.get(java.util.Calendar.MONTH) &&
+           today.get(java.util.Calendar.YEAR) == calendar.get(java.util.Calendar.YEAR)
 }
 
 @Composable
@@ -1078,7 +1334,14 @@ fun SubscriptionCard(item: Subscription, onView: () -> Unit, onEdit: () -> Unit,
         Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(text = item.name, style = MaterialTheme.typography.titleLarge)
-                Text(text = "${item.amount} • Due: ${item.dueDate}", style = MaterialTheme.typography.bodyMedium)
+                Text(text = "${item.amount} • Due: ${item.dueDate} (${item.period.uppercase()})", style = MaterialTheme.typography.bodyMedium)
+                if (item.month.isNotBlank() || item.calendarDate.isNotBlank()) {
+                    Text(
+                        text = "Month: ${item.month.ifBlank { "-" }} • Cal: ${item.calendarDate.ifBlank { "-" }}", 
+                        style = MaterialTheme.typography.bodySmall, 
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             Row {
                 IconButton(onClick = onView, modifier = Modifier.testTag("btn_view_sub")) { Icon(Icons.Default.Visibility, null) }
@@ -1301,21 +1564,191 @@ fun ExpenseDialog(
     })
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SubscriptionDialog(initialName: String = "", initialAccount: String = "", initialAmount: String = "", initialDueDate: String = "", initialMemo: String = "", onDismiss: () -> Unit, onSave: (String, String, String, String, String) -> Unit) {
-    var n by remember { mutableStateOf(initialName) }; var a by remember { mutableStateOf(initialAccount) }; var am by remember { mutableStateOf(initialAmount) }; var d by remember { mutableStateOf(initialDueDate) }; var m by remember { mutableStateOf(initialMemo) }
-    AlertDialog(onDismissRequest = onDismiss, title = { Text("Subscription Details") }, text = {
+fun SubscriptionDialog(
+    initialName: String = "", 
+    initialAccount: String = "", 
+    initialAmount: String = "", 
+    initialDueDate: String = "", 
+    initialPeriod: String = "monthly",
+    initialMonth: String = "",
+    initialCalendarDate: String = "",
+    initialMemo: String = "", 
+    onDismiss: () -> Unit, 
+    onSave: (String, String, String, String, String, String, String, String) -> Unit
+) {
+    var n by remember { mutableStateOf(initialName) }
+    var a by remember { mutableStateOf(initialAccount) }
+    var am by remember { mutableStateOf(initialAmount) }
+    var p by remember { mutableStateOf(initialPeriod) }
+    var mth by remember { mutableStateOf(initialMonth.ifEmpty { "January" }) }
+    var m by remember { mutableStateOf(initialMemo) }
+
+    val months = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+    
+    // Parse initial due date components for dropdowns
+    val initialDay = if (initialPeriod == "annual") {
+        initialDueDate.split(" ").getOrNull(1)?.filter { it.isDigit() } ?: "1"
+    } else {
+        initialDueDate.filter { it.isDigit() }.ifEmpty { "1" }
+    }
+    val initialDueMonth = if (initialPeriod == "annual") initialDueDate.split(" ").firstOrNull() ?: "January" else "January"
+
+    var selectedDueMonth by remember { mutableStateOf(initialDueMonth) }
+    var selectedDueDay by remember { mutableStateOf(initialDay) }
+
+    // Calendar Grid State
+    var showDatePicker by remember { mutableStateOf(false) }
+    val initialCDMillis = remember(initialCalendarDate) {
+        if (initialCalendarDate.isNotEmpty()) {
+            try {
+                val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+                sdf.timeZone = java.util.TimeZone.getTimeZone("UTC")
+                sdf.parse(initialCalendarDate)?.time
+            } catch (e: Exception) { null }
+        } else null
+    }
+    val datePickerState = rememberDatePickerState(initialSelectedDateMillis = initialCDMillis ?: System.currentTimeMillis())
+    val formattedCD = remember(datePickerState.selectedDateMillis) {
+        datePickerState.selectedDateMillis?.let {
+            val sdf = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault())
+            sdf.timeZone = java.util.TimeZone.getTimeZone("UTC")
+            sdf.format(java.util.Date(it))
+        } ?: initialCalendarDate
+    }
+
+    var periodExpanded by remember { mutableStateOf(false) }
+    var dueMonthExpanded by remember { mutableStateOf(false) }
+    var dueDayExpanded by remember { mutableStateOf(false) }
+    var mthExpanded by remember { mutableStateOf(false) }
+
+    if (showDatePicker) {
+        DatePickerDialog(
+            onDismissRequest = { showDatePicker = false },
+            confirmButton = { TextButton(onClick = { showDatePicker = false }) { Text("OK") } },
+            dismissButton = { TextButton(onClick = { showDatePicker = false }) { Text("Cancel") } }
+        ) {
+            DatePicker(state = datePickerState)
+        }
+    }
+
+    AlertDialog(onDismissRequest = onDismiss, title = { Text("Subscription Management v2") }, text = {
         Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+            Log.d("PW_DEBUG", "Opening SubscriptionDialog - Month: $mth, Calendar: $formattedCD")
             OutlinedTextField(n, {n=it}, label={Text("Name")}, modifier=Modifier.fillMaxWidth().testTag("input_sub_name"))
             OutlinedTextField(a, {a=it}, label={Text("Account")}, modifier=Modifier.fillMaxWidth().testTag("input_sub_account"))
             OutlinedTextField(am, {am=it}, label={Text("Amount")}, modifier=Modifier.fillMaxWidth().testTag("input_sub_amount"))
-            OutlinedTextField(d, {d=it}, label={Text("Due Date")}, modifier=Modifier.fillMaxWidth().testTag("input_sub_date"))
+            
+            // Period Selection
+            Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                OutlinedTextField(
+                    value = p.replaceFirstChar { it.uppercase() },
+                    onValueChange = { },
+                    label = { Text("Period") },
+                    readOnly = true,
+                    modifier = Modifier.fillMaxWidth().testTag("input_sub_period"),
+                    trailingIcon = { IconButton(onClick = { periodExpanded = true }) { Icon(Icons.Default.ArrowDropDown, null) } }
+                )
+                DropdownMenu(expanded = periodExpanded, onDismissRequest = { periodExpanded = false }) {
+                    DropdownMenuItem(text = { Text("Monthly") }, onClick = { p = "monthly"; periodExpanded = false })
+                    DropdownMenuItem(text = { Text("Annual") }, onClick = { p = "annual"; periodExpanded = false })
+                }
+            }
+
+            // Due Date Month (Only if Annual)
+            if (p == "annual") {
+                Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    OutlinedTextField(
+                        value = selectedDueMonth,
+                        onValueChange = { },
+                        label = { Text("Due Month") },
+                        readOnly = true,
+                        modifier = Modifier.fillMaxWidth().testTag("input_sub_due_month"),
+                        trailingIcon = { IconButton(onClick = { dueMonthExpanded = true }) { Icon(Icons.Default.ArrowDropDown, null) } }
+                    )
+                    DropdownMenu(expanded = dueMonthExpanded, onDismissRequest = { dueMonthExpanded = false }) {
+                        months.forEach { month ->
+                            DropdownMenuItem(text = { Text(month) }, onClick = { selectedDueMonth = month; dueMonthExpanded = false })
+                        }
+                    }
+                }
+            }
+
+            // Due Date Day
+            Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                OutlinedTextField(
+                    value = "${selectedDueDay}${getOrdinal(selectedDueDay)}",
+                    onValueChange = { },
+                    label = { Text("Due Day") },
+                    readOnly = true,
+                    modifier = Modifier.fillMaxWidth().testTag("input_sub_due_day"),
+                    trailingIcon = { IconButton(onClick = { dueDayExpanded = true }) { Icon(Icons.Default.ArrowDropDown, null) } }
+                )
+                DropdownMenu(expanded = dueDayExpanded, onDismissRequest = { dueDayExpanded = false }) {
+                    (1..31).forEach { day ->
+                        val dayStr = day.toString()
+                        DropdownMenuItem(text = { Text("$dayStr${getOrdinal(dayStr)}") }, onClick = { selectedDueDay = dayStr; dueDayExpanded = false })
+                    }
+                }
+            }
+
+            // Month Selection Dropdown
+            Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                OutlinedTextField(
+                    value = mth,
+                    onValueChange = { },
+                    label = { Text("Month") },
+                    readOnly = true,
+                    modifier = Modifier.fillMaxWidth().testTag("input_sub_month_dropdown"),
+                    trailingIcon = { IconButton(onClick = { mthExpanded = true }) { Icon(Icons.Default.ArrowDropDown, null) } },
+                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                )
+                // Make the whole field clickable
+                Box(modifier = Modifier
+                    .matchParentSize()
+                    .clickable(
+                        indication = null,
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                    ) { mthExpanded = true }
+                )
+                
+                DropdownMenu(expanded = mthExpanded, onDismissRequest = { mthExpanded = false }) {
+                    months.forEach { monthName ->
+                        DropdownMenuItem(text = { Text(monthName) }, onClick = { mth = monthName; mthExpanded = false })
+                    }
+                }
+            }
+
+            // Calendar Selection (DatePicker)
+            Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                OutlinedTextField(
+                    value = formattedCD,
+                    onValueChange = { },
+                    label = { Text("Calendar") },
+                    readOnly = true,
+                    modifier = Modifier.fillMaxWidth().testTag("input_sub_calendar"),
+                    trailingIcon = { IconButton(onClick = { showDatePicker = true }) { Icon(Icons.Default.CalendarToday, null) } }
+                )
+                // Make the whole field clickable to show the calendar grid
+                Box(modifier = Modifier
+                    .matchParentSize()
+                    .clickable(
+                        indication = null,
+                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                    ) { showDatePicker = true }
+                )
+            }
+
             OutlinedTextField(m, {m=it}, label={Text("Memo")}, modifier=Modifier.fillMaxWidth().testTag("input_sub_memo"))
         }
     }, 
     confirmButton = { 
         Button(
-            onClick = { onSave(n,a,am,d,m) },
+            onClick = { 
+                val finalDueDate = if (p == "annual") "$selectedDueMonth ${selectedDueDay}${getOrdinal(selectedDueDay)}" else "${selectedDueDay}${getOrdinal(selectedDueDay)}"
+                onSave(n, a, am, finalDueDate, p, mth, formattedCD, m)
+            },
             modifier = Modifier.testTag("btn_save_sub")
         ) { Text("Save") } 
     }, 
@@ -1335,7 +1768,10 @@ fun ViewSubscriptionDialog(item: Subscription, onDismiss: () -> Unit) {
             Column {
                 if (item.account.isNotBlank()) Text("Account: ${item.account}", style = MaterialTheme.typography.bodyLarge)
                 Text("Amount: ${item.amount}", style = MaterialTheme.typography.bodyLarge)
+                Text("Period: ${item.period.replaceFirstChar { it.uppercase() }}", style = MaterialTheme.typography.bodyLarge)
                 Text("Due Date: ${item.dueDate}", style = MaterialTheme.typography.bodyLarge)
+                if (item.month.isNotBlank()) Text("Month: ${item.month}", style = MaterialTheme.typography.bodyLarge)
+                if (item.calendarDate.isNotBlank()) Text("Calendar: ${item.calendarDate}", style = MaterialTheme.typography.bodyLarge)
                 if (item.memo.isNotBlank()) {
                     Spacer(modifier = Modifier.height(8.dp))
                     Text("Memo: ${item.memo}", style = MaterialTheme.typography.bodyMedium)
