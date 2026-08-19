@@ -255,11 +255,11 @@ fun AuthScreen(onDebugLogin: (String, String) -> Unit) {
                     val digest = md.digest(bytes)
                     val hashedNonce = digest.fold("") { str, it -> str + "%02x".format(it) }
 
-                    statusText = "Creating request for ID: ${com.example.pw.BuildConfig.GOOGLE_WEB_CLIENT_ID}"
+                    statusText = "Creating request for ID: ${BuildConfig.GOOGLE_WEB_CLIENT_ID}"
 
                     val googleIdOption = GetGoogleIdOption.Builder()
                         .setFilterByAuthorizedAccounts(false)
-                        .setServerClientId(com.example.pw.BuildConfig.GOOGLE_WEB_CLIENT_ID)
+                        .setServerClientId(BuildConfig.GOOGLE_WEB_CLIENT_ID)
                         .setNonce(hashedNonce)
                         .setAutoSelectEnabled(false) 
                         .build()
@@ -276,8 +276,7 @@ fun AuthScreen(onDebugLogin: (String, String) -> Unit) {
                         Log.e("PW_AUTH", "Full Exception: ", e)
                         statusText = "Error: ${e::class.java.simpleName}\n${e.message}"
                         return@launch
-                    }
-catch (e: Exception) {
+                    } catch (e: Exception) {
                         statusText = "System error: ${e.message}"
                         return@launch
                     }
@@ -1180,17 +1179,27 @@ fun SubscriptionCalendarView(subscriptions: List<Subscription>, onViewItem: (Sub
                         Box(
                             modifier = Modifier
                                 .weight(1f)
-                                .height(100.dp) // Fixed height is more stable than aspectRatio in nested scroll
+                                .height(100.dp)
                                 .border(0.2.dp, Color.LightGray)
-                                .background(if (day != null && isToday(day, calendarState)) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f) else Color.Transparent)
+                                .background(if (day != null && isToday(day, calendarState)) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.1f) else Color.Transparent)
                         ) {
                             if (day != null) {
-                                Text(
-                                    text = day.toString(), 
-                                    modifier = Modifier.padding(4.dp), 
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = if (isToday(day, calendarState)) FontWeight.Bold else FontWeight.Normal
-                                )
+                                val isCurrentDay = isToday(day, calendarState)
+                                Box(
+                                    modifier = Modifier
+                                        .padding(4.dp)
+                                        .size(24.dp)
+                                        .background(if (isCurrentDay) Color.White else Color.Transparent, CircleShape)
+                                        .then(if (isCurrentDay) Modifier.border(1.dp, Color.Black, CircleShape) else Modifier),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = day.toString(), 
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = if (isCurrentDay) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isCurrentDay) Color.Black else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
                                 
                                 val daySubs = subscriptions.filter { sub ->
                                     val dueDay = Regex("(\\d+)").find(sub.dueDate)?.value?.toIntOrNull() ?: -1
