@@ -9,7 +9,8 @@ data class Subscription(
     val period: String = "",    // "monthly" or "annual"
     val month: String = "",     // Month dropdown selection
     val calendarDate: String = "", // Full date from calendar grid
-    val memo: String = ""
+    val memo: String = "",
+    val isActive: Boolean = true
 )
 
 fun getOrdinal(n: String): String {

@@ -34,6 +34,18 @@ class SubscriptionDateTest {
     }
 
     @Test
+    fun testSubscription_ActiveState() {
+        val subDefault = Subscription(id = "1", name = "Netflix")
+        assertEquals(true, subDefault.isActive)
+
+        val subInactive = Subscription(id = "2", name = "Hulu", isActive = false)
+        assertEquals(false, subInactive.isActive)
+
+        val updated = subInactive.copy(isActive = true)
+        assertEquals(true, updated.isActive)
+    }
+
+    @Test
     fun testSubscription_CopyPreservesFields() {
         val sub = Subscription(
             id = "1",

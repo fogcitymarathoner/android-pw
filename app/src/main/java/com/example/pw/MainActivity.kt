@@ -928,6 +928,7 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
     var searchQuery by remember { mutableStateOf("") }
     var selectedPeriodFilter by remember { mutableStateOf("all") }
     var viewMode by remember { mutableStateOf("list") } // "list" or "calendar"
+    var showActiveFilter by remember { mutableStateOf(true) }
     var showAddDialog by remember { mutableStateOf(false) }
     var entryToEdit by remember { mutableStateOf<Subscription?>(null) }
     var entryToDelete by remember { mutableStateOf<Subscription?>(null) }
@@ -953,9 +954,12 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
                             val month = child.child("month").value?.toString() ?: ""
                             val calendarDate = child.child("calendarDate").value?.toString() ?: ""
                             val memo = child.child("memo").value?.toString() ?: ""
-                            list.add(Subscription(id = child.key, name = name, account = account, amount = amount, dueDate = dueDate, period = period, month = month, calendarDate = calendarDate, memo = memo))
+                            val isActive = (child.child("isActive").value as? Boolean) ?: (child.child("active").value as? Boolean) ?: true
+                            list.add(Subscription(id = child.key, name = name, account = account, amount = amount, dueDate = dueDate, period = period, month = month, calendarDate = calendarDate, memo = memo, isActive = isActive))
                         }
-                        subscriptions = list
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                            subscriptions = list
+                        }
                     }
                 }
                 override fun onCancelled(error: DatabaseError) {}
@@ -965,19 +969,23 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
         }
     }
 
-    val filtered = subscriptions
-        .filter { 
-            (it.name.contains(searchQuery, ignoreCase = true) || it.account.contains(searchQuery, ignoreCase = true)) &&
-            (selectedPeriodFilter == "all" || it.period.lowercase() == selectedPeriodFilter)
-        }
-        .sortByDueDate()
+    val filtered = remember(subscriptions, searchQuery, selectedPeriodFilter, showActiveFilter) {
+        subscriptions
+            .filter { 
+                (it.name.contains(searchQuery, ignoreCase = true) || it.account.contains(searchQuery, ignoreCase = true)) &&
+                (selectedPeriodFilter == "all" || it.period.lowercase() == selectedPeriodFilter) &&
+                (it.isActive == showActiveFilter)
+            }
+            .sortByDueDate()
+    }
 
     if (showAddDialog) {
-        SubscriptionDialog(onDismiss = { showAddDialog = false }, onSave = { n, a, am, d, p, mth, cd, m ->
+        SubscriptionDialog(onDismiss = { showAddDialog = false }, onSave = { n, a, am, d, p, mth, cd, m, active ->
+            val newSub = Subscription(id = UUID.randomUUID().toString(), name = n, account = a, amount = am, dueDate = d, period = p, month = mth, calendarDate = cd, memo = m, isActive = active)
             if (isMockUser) {
-                subscriptions = subscriptions + Subscription(id = UUID.randomUUID().toString(), name = n, account = a, amount = am, dueDate = d, period = p, month = mth, calendarDate = cd, memo = m)
+                subscriptions = subscriptions + newSub
             } else {
-                Firebase.database.reference.child("users").child(userId).child("subscriptions").push().setValue(Subscription(name = n, account = a, amount = am, dueDate = d, period = p, month = mth, calendarDate = cd, memo = m))
+                Firebase.database.reference.child("users").child(userId).child("subscriptions").push().setValue(newSub)
             }
             showAddDialog = false
         })
@@ -993,13 +1001,15 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
             initialMonth = item.month,
             initialCalendarDate = item.calendarDate,
             initialMemo = item.memo,
+            initialIsActive = item.isActive,
             onDismiss = { entryToEdit = null }, 
-            onSave = { n, a, am, d, p, mth, cd, m ->
+            onSave = { n, a, am, d, p, mth, cd, m, active ->
+                val updatedSub = Subscription(id = item.id, name = n, account = a, amount = am, dueDate = d, period = p, month = mth, calendarDate = cd, memo = m, isActive = active)
                 if (isMockUser) {
-                    subscriptions = subscriptions.map { if (it.id == item.id) it.copy(name = n, account = a, amount = am, dueDate = d, period = p, month = mth, calendarDate = cd, memo = m) else it }
+                    subscriptions = subscriptions.map { if (it.id == item.id) updatedSub else it }
                 } else {
                     item.id?.let { id ->
-                        Firebase.database.reference.child("users").child(userId).child("subscriptions").child(id).setValue(Subscription(name = n, account = a, amount = am, dueDate = d, period = p, month = mth, calendarDate = cd, memo = m))
+                        Firebase.database.reference.child("users").child(userId).child("subscriptions").child(id).setValue(updatedSub)
                     }
                 }
                 entryToEdit = null
@@ -1088,6 +1098,28 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = if (showActiveFilter) "Showing Active" else "Showing Inactive", 
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Switch(
+                        checked = showActiveFilter,
+                        onCheckedChange = { showActiveFilter = it },
+                        modifier = Modifier.testTag("switch_filter_active")
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.height(8.dp))
 
             if (viewMode == "list") {
                 LazyColumn(modifier = Modifier.weight(1f)) {
@@ -1214,25 +1246,28 @@ fun SubscriptionCalendarView(subscriptions: List<Subscription>, onViewItem: (Sub
 
                                 Column(modifier = Modifier.padding(top = 20.dp, start = 2.dp, end = 2.dp)) {
                                     daySubs.take(2).forEach { sub ->
-                                        Surface(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .padding(vertical = 1.dp)
-                                                .clickable(
-                                                    indication = null,
-                                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
-                                                ) { onViewItem(sub) },
-                                            color = MaterialTheme.colorScheme.secondaryContainer,
-                                            shape = androidx.compose.foundation.shape.RoundedCornerShape(2.dp)
-                                        ) {
-                                            Text(
-                                                text = sub.name, 
-                                                style = MaterialTheme.typography.labelSmall,
-                                                maxLines = 1,
-                                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                                                modifier = Modifier.padding(1.dp),
-                                                fontSize = 8.sp
-                                            )
+                                        androidx.compose.runtime.key(sub.id ?: sub.name) {
+                                            val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                                            Surface(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(vertical = 1.dp)
+                                                    .clickable(
+                                                        indication = null,
+                                                        interactionSource = interactionSource
+                                                    ) { onViewItem(sub) },
+                                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                                shape = androidx.compose.foundation.shape.RoundedCornerShape(2.dp)
+                                            ) {
+                                                Text(
+                                                    text = sub.name, 
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    maxLines = 1,
+                                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                                    modifier = Modifier.padding(1.dp),
+                                                    fontSize = 8.sp
+                                                )
+                                            }
                                         }
                                     }
                                     if (daySubs.size > 2) {
@@ -1352,7 +1387,7 @@ fun SubscriptionCard(item: Subscription, onView: () -> Unit, onEdit: () -> Unit,
                     )
                 }
             }
-            Row {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 IconButton(onClick = onView, modifier = Modifier.testTag("btn_view_sub")) { Icon(Icons.Default.Visibility, null) }
                 IconButton(onClick = onEdit, modifier = Modifier.testTag("btn_edit_sub")) { Icon(Icons.Default.Edit, null) }
                 IconButton(onClick = onDelete, modifier = Modifier.testTag("btn_delete_sub")) { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }
@@ -1584,8 +1619,9 @@ fun SubscriptionDialog(
     initialMonth: String = "",
     initialCalendarDate: String = "",
     initialMemo: String = "", 
+    initialIsActive: Boolean = true,
     onDismiss: () -> Unit, 
-    onSave: (String, String, String, String, String, String, String, String) -> Unit
+    onSave: (String, String, String, String, String, String, String, String, Boolean) -> Unit
 ) {
     var n by remember { mutableStateOf(initialName) }
     var a by remember { mutableStateOf(initialAccount) }
@@ -1593,6 +1629,7 @@ fun SubscriptionDialog(
     var p by remember { mutableStateOf(initialPeriod) }
     var mth by remember { mutableStateOf(initialMonth.ifEmpty { "January" }) }
     var m by remember { mutableStateOf(initialMemo) }
+    var isActive by remember { mutableStateOf(initialIsActive) }
 
     val months = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
     
@@ -1750,13 +1787,28 @@ fun SubscriptionDialog(
             }
 
             OutlinedTextField(m, {m=it}, label={Text("Memo")}, modifier=Modifier.fillMaxWidth().testTag("input_sub_memo"))
+            
+            // Active/Inactive state switch
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("Active", style = MaterialTheme.typography.bodyLarge)
+                Switch(
+                    checked = isActive,
+                    onCheckedChange = { isActive = it },
+                    modifier = Modifier.testTag("switch_sub_dialog_active")
+                )
+            }
         }
     }, 
     confirmButton = { 
         Button(
             onClick = { 
                 val finalDueDate = if (p == "annual") "$selectedDueMonth ${selectedDueDay}${getOrdinal(selectedDueDay)}" else "${selectedDueDay}${getOrdinal(selectedDueDay)}"
-                onSave(n, a, am, finalDueDate, p, mth, formattedCD, m)
+                onSave(n, a, am, finalDueDate, p, mth, formattedCD, m, isActive)
             },
             modifier = Modifier.testTag("btn_save_sub")
         ) { Text("Save") } 
@@ -1781,6 +1833,7 @@ fun ViewSubscriptionDialog(item: Subscription, onDismiss: () -> Unit) {
                 Text("Due Date: ${item.dueDate}", style = MaterialTheme.typography.bodyLarge)
                 if (item.month.isNotBlank()) Text("Month: ${item.month}", style = MaterialTheme.typography.bodyLarge)
                 if (item.calendarDate.isNotBlank()) Text("Calendar: ${item.calendarDate}", style = MaterialTheme.typography.bodyLarge)
+                Text("Status: ${if (item.isActive) "Active" else "Inactive"}", style = MaterialTheme.typography.bodyLarge)
                 if (item.memo.isNotBlank()) {
                     Spacer(modifier = Modifier.height(8.dp))
                     Text("Memo: ${item.memo}", style = MaterialTheme.typography.bodyMedium)
