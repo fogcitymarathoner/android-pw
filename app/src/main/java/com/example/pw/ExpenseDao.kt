@@ -40,5 +40,5 @@ interface ExpenseDao {
     suspend fun getExpenseCountForCategory(categoryId: String): Int
 
     @Query("DELETE FROM expenses WHERE userId = :userId")
-    suspend fun deleteAllForUser(userId: String)
+    suspend fun deleteAllForUser(userId: String): Int
 }

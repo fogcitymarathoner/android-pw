@@ -24,5 +24,5 @@ interface VendorDao {
     suspend fun delete(vendor: Vendor)
 
     @Query("DELETE FROM vendors WHERE userId = :userId")
-    suspend fun deleteAllForUser(userId: String)
+    suspend fun deleteAllForUser(userId: String): Int
 }
