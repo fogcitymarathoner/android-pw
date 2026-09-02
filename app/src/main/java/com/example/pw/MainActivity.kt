@@ -49,16 +49,22 @@ import com.google.firebase.auth.GoogleAuthProvider
 import com.google.firebase.auth.auth
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
+import com.google.firebase.database.DatabaseReference
 import com.google.firebase.database.ValueEventListener
 import com.google.firebase.database.database
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Locale
 import java.util.UUID
+
+const val FIREBASE_DB_URL = "https://fogcitymarathoner-default-rtdb.firebaseio.com"
+val Firebase.realtimeDbRef get() = Firebase.database(FIREBASE_DB_URL).reference
 
 class MainActivity : ComponentActivity() {
     private var keepScreenOnJob: Job? = null
@@ -347,26 +353,52 @@ fun PasswordsScreen(userId: String, userEmail: String, activity: MainActivity) {
     val isMockUser = userId.startsWith("debug_")
 
     if (!isMockUser) {
-        val dbRef = Firebase.database.reference.child("users").child(userId).child("passwords")
-        DisposableEffect(userId) {
-            val listener = object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    scope.launch(kotlinx.coroutines.Dispatchers.Default) {
-                        val list = mutableListOf<PwEntity>()
-                        for (child in snapshot.children) {
-                            val vendor = child.child("vendor").value?.toString() ?: ""
-                            val account = child.child("account").value?.toString() ?: ""
-                            val pw = child.child("pw").value?.toString() ?: ""
-                            val memo = child.child("memo").value?.toString() ?: ""
-                            list.add(PwEntity(id = child.key, vendor = vendor, account = account, pw = pw, memo = memo))
+        val userKeys = remember(userId, userEmail) {
+            val sanitized = userEmail.replace(".", "_").replace("#", "_").replace("$", "_").replace("[", "_").replace("]", "_")
+            listOfNotNull(userId, if (sanitized.isNotBlank() && sanitized != userId) sanitized else null).distinct()
+        }
+
+        DisposableEffect(userKeys) {
+            val listeners = mutableListOf<Pair<DatabaseReference, ValueEventListener>>()
+            val passwordMap = mutableMapOf<String, MutableMap<String, PwEntity>>()
+
+            userKeys.forEach { key ->
+                val refs = listOf(
+                    Firebase.realtimeDbRef.child("users").child(key).child("passwords"),
+                    Firebase.realtimeDbRef.child("passwords").child(key)
+                )
+
+                refs.forEach { ref ->
+                    val listener = object : ValueEventListener {
+                        override fun onDataChange(snapshot: DataSnapshot) {
+                            val pathKey = ref.toString()
+                            val pathMap = mutableMapOf<String, PwEntity>()
+                            for (child in snapshot.children) {
+                                val vendor = child.child("vendor").value?.toString() ?: ""
+                                val account = child.child("account").value?.toString() ?: ""
+                                val pw = child.child("pw").value?.toString() ?: ""
+                                val memo = child.child("memo").value?.toString() ?: ""
+                                val childKey = child.key ?: UUID.randomUUID().toString()
+                                pathMap[childKey] = PwEntity(id = childKey, vendor = vendor, account = account, pw = pw, memo = memo)
+                            }
+                            passwordMap[pathKey] = pathMap
+                            val mergedList = passwordMap.values.flatMap { it.values }.distinctBy { "${it.vendor}_${it.account}_${it.pw}" }
+                            scope.launch(Dispatchers.Main) {
+                                passwords = mergedList
+                            }
                         }
-                        passwords = list
+                        override fun onCancelled(error: DatabaseError) {
+                            Log.e("PW_SYNC", "Passwords listener cancelled: ${error.message}")
+                        }
                     }
+                    ref.addValueEventListener(listener)
+                    listeners.add(ref to listener)
                 }
-                override fun onCancelled(error: DatabaseError) {}
             }
-            dbRef.addValueEventListener(listener)
-            onDispose { dbRef.removeEventListener(listener) }
+
+            onDispose {
+                listeners.forEach { (ref, listener) -> ref.removeEventListener(listener) }
+            }
         }
     }
 
@@ -379,7 +411,7 @@ fun PasswordsScreen(userId: String, userEmail: String, activity: MainActivity) {
             if (isMockUser) {
                 passwords = passwords + PwEntity(id = UUID.randomUUID().toString(), vendor = v, account = a, pw = p, memo = m)
             } else {
-                Firebase.database.reference.child("users").child(userId).child("passwords").push().setValue(PwEntity(vendor = v, account = a, pw = p, memo = m))
+                Firebase.realtimeDbRef.child("users").child(userId).child("passwords").push().setValue(PwEntity(vendor = v, account = a, pw = p, memo = m))
             }
             showAddDialog = false
         })
@@ -392,7 +424,7 @@ fun PasswordsScreen(userId: String, userEmail: String, activity: MainActivity) {
                     passwords = passwords.map { if (it.id == entity.id) it.copy(vendor = v, account = a, pw = p, memo = m) else it }
                 } else {
                     entity.id?.let { id ->
-                        Firebase.database.reference.child("users").child(userId).child("passwords").child(id).setValue(PwEntity(vendor = v, account = a, pw = p, memo = m))
+                        Firebase.realtimeDbRef.child("users").child(userId).child("passwords").child(id).setValue(PwEntity(vendor = v, account = a, pw = p, memo = m))
                     }
                 }
                 entryToEdit = null
@@ -409,7 +441,7 @@ fun PasswordsScreen(userId: String, userEmail: String, activity: MainActivity) {
                             passwords = passwords.filter { it.id != entity.id }
                         } else {
                             entity.id?.let { id ->
-                                Firebase.database.reference.child("users").child(userId).child("passwords").child(id).removeValue()
+                                Firebase.realtimeDbRef.child("users").child(userId).child("passwords").child(id).removeValue()
                             }
                         }
                         entryToDelete = null 
@@ -490,88 +522,107 @@ fun ExpensesScreen(userId: String, userEmail: String) {
     // Detect if we are using the mock user for testing
     val isMockUser = userId.startsWith("debug_")
 
-    val fbExpensesRef = remember(userId) { Firebase.database.reference.child("users").child(userId).child("expenses") }
-    val fbCategoriesRef = remember(userId) { Firebase.database.reference.child("users").child(userId).child("categories") }
-    val fbVendorsRef = remember(userId) { Firebase.database.reference.child("users").child(userId).child("vendors") }
+    val fbExpensesRef = remember(userId) { Firebase.realtimeDbRef.child("users").child(userId).child("expenses") }
+    val fbCategoriesRef = remember(userId) { Firebase.realtimeDbRef.child("users").child(userId).child("categories") }
+    val fbVendorsRef = remember(userId) { Firebase.realtimeDbRef.child("users").child(userId).child("vendors") }
 
-    // Sync from Firebase to Room
-    DisposableEffect(userId) {
+    val userKeys = remember(userId, userEmail) {
+        val sanitized = userEmail.replace(".", "_").replace("#", "_").replace("$", "_").replace("[", "_").replace("]", "_")
+        listOfNotNull(userId, if (sanitized.isNotBlank() && sanitized != userId) sanitized else null).distinct()
+    }
+
+    DisposableEffect(userKeys) {
         if (isMockUser) return@DisposableEffect onDispose {}
 
-        val catListener = object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                    val categoriesToSync = mutableListOf<Category>()
-                    snapshot.children.forEach { child ->
-                        val remoteId = child.key ?: return@forEach
-                        val name = child.child("name").value?.toString() ?: ""
-                        categoriesToSync.add(Category(remoteId = remoteId, name = name, userId = userId))
-                    }
-                    if (categoriesToSync.isNotEmpty()) {
-                        categoryDao.insertAll(categoriesToSync)
-                    }
-                    Log.d("PW_SYNC", "Categories synced: ${categoriesToSync.size}")
-                }
-            }
-            override fun onCancelled(error: DatabaseError) {}
-        }
-        fbCategoriesRef.addValueEventListener(catListener)
+        val listeners = mutableListOf<Pair<DatabaseReference, ValueEventListener>>()
 
-        val vendorListener = object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                    val vendorsToSync = mutableListOf<Vendor>()
-                    snapshot.children.forEach { child ->
-                        val remoteId = child.key ?: return@forEach
-                        val name = child.child("name").value?.toString() ?: ""
-                        vendorsToSync.add(Vendor(remoteId = remoteId, name = name, userId = userId))
-                    }
-                    if (vendorsToSync.isNotEmpty()) {
-                        vendorDao.insertAll(vendorsToSync)
-                    }
-                    Log.d("PW_SYNC", "Vendors synced: ${vendorsToSync.size}")
-                }
-            }
-            override fun onCancelled(error: DatabaseError) {}
-        }
-        fbVendorsRef.addValueEventListener(vendorListener)
+        userKeys.forEach { key ->
+            val refsCategories = listOf(
+                Firebase.realtimeDbRef.child("users").child(key).child("categories"),
+                Firebase.realtimeDbRef.child("categories").child(key)
+            )
+            val refsVendors = listOf(
+                Firebase.realtimeDbRef.child("users").child(key).child("vendors"),
+                Firebase.realtimeDbRef.child("vendors").child(key)
+            )
+            val refsExpenses = listOf(
+                Firebase.realtimeDbRef.child("users").child(key).child("expenses"),
+                Firebase.realtimeDbRef.child("expenses").child(key)
+            )
 
-        val expListener = object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
-                    val expensesToSync = mutableListOf<Expense>()
-                    snapshot.children.forEach { child ->
-                        val remoteId = child.key ?: return@forEach
-                        val amount = child.child("amount").value?.toString() ?: ""
-                        val date = child.child("date").value?.toString() ?: ""
-                        val memo = child.child("memo").value?.toString() ?: ""
-                        val remoteCatId = child.child("remoteCategoryId").value?.toString()
-                        val remoteVendorId = child.child("remoteVendorId").value?.toString()
-
-                        expensesToSync.add(Expense(
-                            remoteId = remoteId,
-                            vendorId = remoteVendorId,
-                            categoryId = remoteCatId,
-                            amount = amount,
-                            date = date,
-                            memo = memo,
-                            userId = userId
-                        ))
+            refsCategories.forEach { ref ->
+                val catListener = object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        scope.launch(Dispatchers.IO) {
+                            val categoriesToSync = mutableListOf<Category>()
+                            snapshot.children.forEach { child ->
+                                val remoteId = child.key ?: return@forEach
+                                val name = child.child("name").value?.toString() ?: ""
+                                categoriesToSync.add(Category(remoteId = remoteId, name = name, userId = userId))
+                            }
+                            if (categoriesToSync.isNotEmpty()) categoryDao.insertAll(categoriesToSync)
+                        }
                     }
-                    if (expensesToSync.isNotEmpty()) {
-                        expenseDao.insertAll(expensesToSync)
-                    }
-                    Log.d("PW_SYNC", "Expenses synced: ${expensesToSync.size}")
+                    override fun onCancelled(error: DatabaseError) {}
                 }
+                ref.addValueEventListener(catListener)
+                listeners.add(ref to catListener)
             }
-            override fun onCancelled(error: DatabaseError) {}
+
+            refsVendors.forEach { ref ->
+                val vendorListener = object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        scope.launch(Dispatchers.IO) {
+                            val vendorsToSync = mutableListOf<Vendor>()
+                            snapshot.children.forEach { child ->
+                                val remoteId = child.key ?: return@forEach
+                                val name = child.child("name").value?.toString() ?: ""
+                                vendorsToSync.add(Vendor(remoteId = remoteId, name = name, userId = userId))
+                            }
+                            if (vendorsToSync.isNotEmpty()) vendorDao.insertAll(vendorsToSync)
+                        }
+                    }
+                    override fun onCancelled(error: DatabaseError) {}
+                }
+                ref.addValueEventListener(vendorListener)
+                listeners.add(ref to vendorListener)
+            }
+
+            refsExpenses.forEach { ref ->
+                val expListener = object : ValueEventListener {
+                    override fun onDataChange(snapshot: DataSnapshot) {
+                        scope.launch(Dispatchers.IO) {
+                            val expensesToSync = mutableListOf<Expense>()
+                            snapshot.children.forEach { child ->
+                                val remoteId = child.key ?: return@forEach
+                                val amount = child.child("amount").value?.toString() ?: ""
+                                val date = child.child("date").value?.toString() ?: ""
+                                val memo = child.child("memo").value?.toString() ?: ""
+                                val remoteCatId = child.child("remoteCategoryId").value?.toString() ?: child.child("categoryId").value?.toString()
+                                val remoteVendorId = child.child("remoteVendorId").value?.toString() ?: child.child("vendorId").value?.toString()
+
+                                expensesToSync.add(Expense(
+                                    remoteId = remoteId,
+                                    vendorId = remoteVendorId,
+                                    categoryId = remoteCatId,
+                                    amount = amount,
+                                    date = date,
+                                    memo = memo,
+                                    userId = userId
+                                ))
+                            }
+                            if (expensesToSync.isNotEmpty()) expenseDao.insertAll(expensesToSync)
+                        }
+                    }
+                    override fun onCancelled(error: DatabaseError) {}
+                }
+                ref.addValueEventListener(expListener)
+                listeners.add(ref to expListener)
+            }
         }
-        fbExpensesRef.addValueEventListener(expListener)
 
         onDispose {
-            fbCategoriesRef.removeEventListener(catListener)
-            fbVendorsRef.removeEventListener(vendorListener)
-            fbExpensesRef.removeEventListener(expListener)
+            listeners.forEach { (ref, listener) -> ref.removeEventListener(listener) }
         }
     }
 
@@ -623,7 +674,7 @@ fun ExpensesScreen(userId: String, userEmail: String) {
                     expenseDao.insert(expense)
                     
                     if (!isMockUser) {
-                        Firebase.database.reference.child("users").child(userId).child("expenses").child(remoteId).setValue(mapOf(
+                        Firebase.realtimeDbRef.child("users").child(userId).child("expenses").child(remoteId).setValue(mapOf(
                             "amount" to a,
                             "date" to d,
                             "memo" to m,
@@ -946,35 +997,67 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
     val isMockUser = userId.startsWith("debug_")
 
     if (!isMockUser) {
-        val dbRef = Firebase.database.reference.child("users").child(userId).child("subscriptions")
-        DisposableEffect(userId) {
-            val listener = object : ValueEventListener {
-                override fun onDataChange(snapshot: DataSnapshot) {
-                    scope.launch(kotlinx.coroutines.Dispatchers.Default) {
-                        val list = mutableListOf<Subscription>()
-                        for (child in snapshot.children) {
-                            val name = child.child("name").value?.toString() ?: ""
-                            val account = child.child("account").value?.toString() ?: ""
-                            val amount = child.child("amount").value?.toString() ?: ""
-                            val dueDate = child.child("dueDate").value?.toString() ?: ""
-                            val period = child.child("period").value?.toString() ?: "monthly"
-                            val month = child.child("month").value?.toString() ?: ""
-                            val calendarDate = child.child("calendarDate").value?.toString() ?: ""
-                            val memo = child.child("memo").value?.toString() ?: ""
-                            val isActive = (child.child("isActive").value as? Boolean) ?: (child.child("active").value as? Boolean) ?: true
-                            list.add(Subscription(id = child.key, name = name, account = account, amount = amount, dueDate = dueDate, period = period, month = month, calendarDate = calendarDate, memo = memo, isActive = isActive))
+        val userKeys = remember(userId, userEmail) {
+            val sanitized = userEmail.replace(".", "_").replace("#", "_").replace("$", "_").replace("[", "_").replace("]", "_")
+            listOfNotNull(userId, if (sanitized.isNotBlank() && sanitized != userId) sanitized else null).distinct()
+        }
+
+        DisposableEffect(userKeys) {
+            val listeners = mutableListOf<Pair<DatabaseReference, ValueEventListener>>()
+            val subMap = mutableMapOf<String, MutableMap<String, Subscription>>()
+
+            userKeys.forEach { key ->
+                val refs = listOf(
+                    Firebase.realtimeDbRef.child("users").child(key).child("subscriptions"),
+                    Firebase.realtimeDbRef.child("subscriptions").child(key)
+                )
+
+                refs.forEach { ref ->
+                    val listener = object : ValueEventListener {
+                        override fun onDataChange(snapshot: DataSnapshot) {
+                            val pathKey = ref.toString()
+                            val pathMap = mutableMapOf<String, Subscription>()
+                            for (child in snapshot.children) {
+                                val name = child.child("name").value?.toString() ?: ""
+                                val account = child.child("account").value?.toString() ?: ""
+                                val amount = child.child("amount").value?.toString() ?: ""
+                                val dueDate = child.child("dueDate").value?.toString() ?: ""
+                                val period = child.child("period").value?.toString() ?: "monthly"
+                                val month = child.child("month").value?.toString() ?: ""
+                                val calendarDate = child.child("calendarDate").value?.toString() ?: ""
+                                val memo = child.child("memo").value?.toString() ?: ""
+                                val rawActive = child.child("isActive").value ?: child.child("active").value
+                                val isActive = when (rawActive) {
+                                    is Boolean -> rawActive
+                                    is Number -> rawActive.toInt() != 0
+                                    is String -> rawActive.equals("true", ignoreCase = true) || rawActive == "1"
+                                    else -> true
+                                }
+                                val childKey = child.key ?: UUID.randomUUID().toString()
+                                pathMap[childKey] = Subscription(id = childKey, name = name, account = account, amount = amount, dueDate = dueDate, period = period, month = month, calendarDate = calendarDate, memo = memo, isActive = isActive)
+                            }
+                            subMap[pathKey] = pathMap
+                            val mergedList = subMap.values.flatMap { it.values }.distinctBy { "${it.name}_${it.dueDate}_${it.amount}" }
+                            scope.launch(Dispatchers.Main) {
+                                subscriptions = mergedList
+                            }
                         }
-                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
-                            subscriptions = list
+                        override fun onCancelled(error: DatabaseError) {
+                            Log.e("PW_SYNC", "Subscriptions listener cancelled: ${error.message}")
                         }
                     }
+                    ref.addValueEventListener(listener)
+                    listeners.add(ref to listener)
                 }
-                override fun onCancelled(error: DatabaseError) {}
             }
-            dbRef.addValueEventListener(listener)
-            onDispose { dbRef.removeEventListener(listener) }
+
+            onDispose {
+                listeners.forEach { (ref, listener) -> ref.removeEventListener(listener) }
+            }
         }
     }
+
+    var selectedDateForModal by remember { mutableStateOf<Calendar?>(null) }
 
     val filtered = remember(subscriptions, searchQuery, selectedPeriodFilter, showActiveFilter) {
         subscriptions
@@ -992,7 +1075,7 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
             if (isMockUser) {
                 subscriptions = subscriptions + newSub
             } else {
-                Firebase.database.reference.child("users").child(userId).child("subscriptions").push().setValue(newSub)
+                Firebase.realtimeDbRef.child("users").child(userId).child("subscriptions").push().setValue(newSub)
             }
             showAddDialog = false
         })
@@ -1016,7 +1099,7 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
                     subscriptions = subscriptions.map { if (it.id == item.id) updatedSub else it }
                 } else {
                     item.id?.let { id ->
-                        Firebase.database.reference.child("users").child(userId).child("subscriptions").child(id).setValue(updatedSub)
+                        Firebase.realtimeDbRef.child("users").child(userId).child("subscriptions").child(id).setValue(updatedSub)
                     }
                 }
                 entryToEdit = null
@@ -1033,7 +1116,7 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
                             subscriptions = subscriptions.filter { it.id != item.id }
                         } else {
                             item.id?.let { id ->
-                                Firebase.database.reference.child("users").child(userId).child("subscriptions").child(id).removeValue()
+                                Firebase.realtimeDbRef.child("users").child(userId).child("subscriptions").child(id).removeValue()
                             }
                         }
                         entryToDelete = null 
@@ -1050,6 +1133,28 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
         ViewSubscriptionDialog(
             item = item,
             onDismiss = { entryToView = null }
+        )
+    }
+
+    selectedDateForModal?.let { date ->
+        val daySubs = getSubscriptionsForDate(filtered, date)
+
+        DateSubscriptionsModal(
+            date = date,
+            subscriptions = daySubs,
+            onViewItem = { 
+                selectedDateForModal = null
+                entryToView = it 
+            },
+            onEditItem = { 
+                selectedDateForModal = null
+                entryToEdit = it 
+            },
+            onDeleteItem = { 
+                selectedDateForModal = null
+                entryToDelete = it 
+            },
+            onDismiss = { selectedDateForModal = null }
         )
     }
 
@@ -1078,32 +1183,34 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
             Text(text = "Logged in as: $userEmail", style = MaterialTheme.typography.bodySmall)
             Spacer(modifier = Modifier.height(16.dp))
 
-            SearchBar(searchQuery) { searchQuery = it }
-            
-            // Duration Filter Chips (Full width row)
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState())
-                    .padding(vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                listOf(
-                    "all" to "All",
-                    "monthly" to "Monthly",
-                    "every two months" to "2 Months",
-                    "annual" to "Annual"
-                ).forEach { (p, labelText) ->
-                    FilterChip(
-                        selected = selectedPeriodFilter == p,
-                        onClick = { selectedPeriodFilter = p },
-                        label = { Text(labelText) },
-                        modifier = Modifier.testTag("filter_sub_${p.replace(" ", "_")}")
-                    )
+            if (viewMode == "list") {
+                SearchBar(searchQuery) { searchQuery = it }
+                
+                // Duration Filter Chips (Full width row)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(vertical = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf(
+                        "all" to "All",
+                        "monthly" to "Monthly",
+                        "every two months" to "2 Months",
+                        "annual" to "Annual"
+                    ).forEach { (p, labelText) ->
+                        FilterChip(
+                            selected = selectedPeriodFilter == p,
+                            onClick = { selectedPeriodFilter = p },
+                            label = { Text(labelText) },
+                            modifier = Modifier.testTag("filter_sub_${p.replace(" ", "_")}")
+                        )
+                    }
                 }
-            }
 
-            Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(4.dp))
+            }
 
             // Control Bar: Active Toggle on Left, List/Calendar View Mode Toggle on Right
             Row(
@@ -1166,7 +1273,8 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
                 Box(modifier = Modifier.weight(1f)) {
                     SubscriptionCalendarView(
                         subscriptions = filtered,
-                        onViewItem = { entryToView = it }
+                        onViewItem = { entryToView = it },
+                        onSelectDate = { selectedDateForModal = it }
                     )
                 }
             }
@@ -1174,10 +1282,87 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
     }
 }
 
+fun getSubscriptionsForDate(subscriptions: List<Subscription>, date: Calendar): List<Subscription> {
+    val day = date.get(Calendar.DAY_OF_MONTH)
+    val monthIdx = date.get(Calendar.MONTH)
+    val months = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+
+    return subscriptions.filter { sub ->
+        val dueDay = Regex("(\\d+)").find(sub.dueDate)?.value?.toIntOrNull() ?: -1
+        if (dueDay != day) return@filter false
+        
+        val periodLower = sub.period.lowercase().replace("_", " ")
+        if (periodLower == "annual") {
+            val subMonth = months.indexOfFirst { it.equals(sub.dueDate.split(" ").firstOrNull(), ignoreCase = true) }.takeIf { it != -1 } ?: -1
+            subMonth == monthIdx
+        } else if (periodLower == "every two months") {
+            val startMonthName = sub.dueDate.split(" ").firstOrNull() ?: sub.month
+            val startMonthIndex = months.indexOfFirst { it.equals(startMonthName, ignoreCase = true) }.takeIf { it != -1 } ?: -1
+            if (startMonthIndex != -1) {
+                val monthDiff = (monthIdx - startMonthIndex + 12) % 12
+                monthDiff % 2 == 0
+            } else {
+                true
+            }
+        } else {
+            true
+        }
+    }
+}
+
+@Composable
+fun DateSubscriptionsModal(
+    date: Calendar,
+    subscriptions: List<Subscription>,
+    onViewItem: (Subscription) -> Unit,
+    onEditItem: (Subscription) -> Unit,
+    onDeleteItem: (Subscription) -> Unit,
+    onDismiss: () -> Unit
+) {
+    val currentLocale = remember { Locale.getDefault() }
+    val dateText = SimpleDateFormat("EEEE, MMMM d, yyyy", currentLocale).format(date.time)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                text = dateText,
+                style = MaterialTheme.typography.titleLarge,
+                modifier = Modifier.testTag("dialog_date_subs_title")
+            )
+        },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+            ) {
+                if (subscriptions.isEmpty()) {
+                    Text("No subscriptions due on this date.", style = MaterialTheme.typography.bodyMedium)
+                } else {
+                    subscriptions.forEach { item ->
+                        SubscriptionCard(
+                            item = item,
+                            onView = { onViewItem(item) },
+                            onEdit = { onEditItem(item) },
+                            onDelete = { onDeleteItem(item) }
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.testTag("btn_close_date_subs_modal")
+            ) { Text("Close") }
+        }
+    )
+}
+
 @Composable
 fun SubscriptionCalendarView(
     subscriptions: List<Subscription>, 
-    onViewItem: (Subscription) -> Unit
+    onViewItem: (Subscription) -> Unit,
+    onSelectDate: (Calendar) -> Unit
 ) {
     var calendarState by remember { mutableStateOf(Calendar.getInstance()) }
     var calendarMode by remember { mutableStateOf("month") } // "month", "week", "day"
@@ -1316,20 +1501,19 @@ fun SubscriptionCalendarView(
                 }
 
                 val rows = days.chunked(7)
-                Column(modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
                     rows.forEach { rowDays ->
-                        Row(modifier = Modifier.fillMaxWidth().height(90.dp)) {
+                        Row(modifier = Modifier.fillMaxWidth().height(75.dp)) {
                             rowDays.forEach { day ->
                                 Column(
                                     modifier = Modifier
                                         .weight(1f)
-                                        .height(90.dp)
+                                        .height(75.dp)
                                         .border(0.2.dp, Color.LightGray)
                                         .background(if (day != null && isToday(day, calendarState)) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.1f) else Color.Transparent)
                                         .then(if (day != null) Modifier.clickable {
                                             val targetCal = (calendarState.clone() as Calendar).apply { set(Calendar.DAY_OF_MONTH, day) }
-                                            calendarState = targetCal
-                                            calendarMode = "day"
+                                            onSelectDate(targetCal)
                                         } else Modifier)
                                         .padding(2.dp)
                                 ) {
@@ -1415,8 +1599,7 @@ fun SubscriptionCalendarView(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        calendarState = date.clone() as Calendar
-                                        calendarMode = "day"
+                                        onSelectDate(date)
                                     }
                             ) {
                                 Column(
