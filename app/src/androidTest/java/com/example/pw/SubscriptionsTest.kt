@@ -139,6 +139,26 @@ class SubscriptionsTest {
         composeTestRule.onNodeWithText(uniqueName).assertDoesNotExist()
     }
 
+    @Test
+    fun testCalendarModesMonthWeekDay() {
+        loginAndGoToSubs()
+        // Switch to calendar view
+        composeTestRule.onNodeWithContentDescription("Calendar View").performClick()
+
+        // Verify Month mode is selected by default
+        composeTestRule.onNodeWithTag("btn_cal_mode_month").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_cal_mode_week").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_cal_mode_day").assertIsDisplayed()
+
+        // Click Week mode
+        composeTestRule.onNodeWithTag("btn_cal_mode_week").performClick()
+        composeTestRule.onNodeWithTag("text_cal_header_title").assertIsDisplayed()
+
+        // Click Day mode
+        composeTestRule.onNodeWithTag("btn_cal_mode_day").performClick()
+        composeTestRule.onNodeWithTag("text_cal_header_title").assertIsDisplayed()
+    }
+
     private fun addMockSubscription(name: String, amount: String, dueDay: String) {
         composeTestRule.onNodeWithTag("fab_add_sub").performClick()
         composeTestRule.onNodeWithTag("input_sub_name").performTextInput(name)

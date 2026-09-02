@@ -14,7 +14,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -27,6 +29,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
@@ -51,6 +55,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Locale
 import java.util.UUID
 
 class MainActivity : ComponentActivity() {
@@ -973,7 +980,7 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
         subscriptions
             .filter { 
                 (it.name.contains(searchQuery, ignoreCase = true) || it.account.contains(searchQuery, ignoreCase = true)) &&
-                (selectedPeriodFilter == "all" || it.period.lowercase() == selectedPeriodFilter) &&
+                (selectedPeriodFilter == "all" || it.period.lowercase().replace("_", " ") == selectedPeriodFilter) &&
                 (it.isActive == showActiveFilter)
             }
             .sortByDueDate()
@@ -1073,35 +1080,36 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
 
             SearchBar(searchQuery) { searchQuery = it }
             
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                // Period Filter Chips
-                Row(modifier = Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("all", "monthly", "annual").forEach { p ->
-                        FilterChip(
-                            selected = selectedPeriodFilter == p,
-                            onClick = { selectedPeriodFilter = p },
-                            label = { Text(p.replaceFirstChar { it.uppercase() }) },
-                            modifier = Modifier.testTag("filter_sub_$p")
-                        )
-                    }
-                }
-
-                // View Mode Toggle
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    IconButton(onClick = { viewMode = "list" }, 
-                        modifier = Modifier.background(if(viewMode == "list") MaterialTheme.colorScheme.primaryContainer else Color.Transparent, CircleShape)) {
-                        Icon(Icons.Default.List, contentDescription = "List View")
-                    }
-                    IconButton(onClick = { viewMode = "calendar" },
-                        modifier = Modifier.background(if(viewMode == "calendar") MaterialTheme.colorScheme.primaryContainer else Color.Transparent, CircleShape)) {
-                        Icon(Icons.Default.DateRange, contentDescription = "Calendar View")
-                    }
+            // Duration Filter Chips (Full width row)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf(
+                    "all" to "All",
+                    "monthly" to "Monthly",
+                    "every two months" to "2 Months",
+                    "annual" to "Annual"
+                ).forEach { (p, labelText) ->
+                    FilterChip(
+                        selected = selectedPeriodFilter == p,
+                        onClick = { selectedPeriodFilter = p },
+                        label = { Text(labelText) },
+                        modifier = Modifier.testTag("filter_sub_${p.replace(" ", "_")}")
+                    )
                 }
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Control Bar: Active Toggle on Left, List/Calendar View Mode Toggle on Right
             Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -1118,12 +1126,34 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
                         modifier = Modifier.testTag("switch_filter_active")
                     )
                 }
+
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = { viewMode = "list" }, 
+                        modifier = Modifier
+                            .background(if (viewMode == "list") MaterialTheme.colorScheme.primaryContainer else Color.Transparent, CircleShape)
+                            .testTag("btn_view_list")
+                    ) {
+                        Icon(Icons.Default.List, contentDescription = "List View")
+                    }
+                    IconButton(
+                        onClick = { viewMode = "calendar" },
+                        modifier = Modifier
+                            .background(if (viewMode == "calendar") MaterialTheme.colorScheme.primaryContainer else Color.Transparent, CircleShape)
+                            .testTag("btn_view_calendar")
+                    ) {
+                        Icon(Icons.Default.DateRange, contentDescription = "Calendar View")
+                    }
+                }
             }
             Spacer(modifier = Modifier.height(8.dp))
 
             if (viewMode == "list") {
                 LazyColumn(modifier = Modifier.weight(1f)) {
-                    items(filtered, key = { it.id ?: "" }) { item ->
+                    items(filtered, key = { it.id ?: "${it.name}_${it.dueDate}_${it.amount}" }) { item ->
                         SubscriptionCard(
                             item = item, 
                             onView = { entryToView = item },
@@ -1145,28 +1175,64 @@ fun SubscriptionsScreen(userId: String, userEmail: String) {
 }
 
 @Composable
-fun SubscriptionCalendarView(subscriptions: List<Subscription>, onViewItem: (Subscription) -> Unit) {
-    var calendarState by remember { mutableStateOf(java.util.Calendar.getInstance()) }
-    val currentMonth = calendarState.get(java.util.Calendar.MONTH)
-    val monthName = java.text.SimpleDateFormat("MMMM yyyy", java.util.Locale.getDefault()).format(calendarState.time)
+fun SubscriptionCalendarView(
+    subscriptions: List<Subscription>, 
+    onViewItem: (Subscription) -> Unit
+) {
+    var calendarState by remember { mutableStateOf(Calendar.getInstance()) }
+    var calendarMode by remember { mutableStateOf("month") } // "month", "week", "day"
+    val currentLocale = remember { Locale.getDefault() }
 
-    val daysInMonth = calendarState.getActualMaximum(java.util.Calendar.DAY_OF_MONTH)
-    val firstDayOfMonth = (calendarState.clone() as java.util.Calendar).apply { set(java.util.Calendar.DAY_OF_MONTH, 1) }
-    val firstDayOfWeek = firstDayOfMonth.get(java.util.Calendar.DAY_OF_WEEK)
-    
-    val days = mutableListOf<Int?>()
-    // Padding for first week
-    repeat(firstDayOfWeek - 1) { days.add(null) }
-    for (i in 1..daysInMonth) { days.add(i) }
-    // Padding for last week to complete the grid
-    while (days.size % 7 != 0) { days.add(null) }
+    val currentMonth = calendarState.get(Calendar.MONTH)
+    val months = remember { listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December") }
+
+    fun getSubscriptionsForDate(date: Calendar): List<Subscription> {
+        val day = date.get(Calendar.DAY_OF_MONTH)
+        val monthIdx = date.get(Calendar.MONTH)
+        return subscriptions.filter { sub ->
+            val dueDay = Regex("(\\d+)").find(sub.dueDate)?.value?.toIntOrNull() ?: -1
+            if (dueDay != day) return@filter false
+            
+            val periodLower = sub.period.lowercase().replace("_", " ")
+            if (periodLower == "annual") {
+                val subMonth = months.indexOfFirst { it.equals(sub.dueDate.split(" ").firstOrNull(), ignoreCase = true) }.takeIf { it != -1 } ?: -1
+                subMonth == monthIdx
+            } else if (periodLower == "every two months") {
+                val startMonthName = sub.dueDate.split(" ").firstOrNull() ?: sub.month
+                val startMonthIndex = months.indexOfFirst { it.equals(startMonthName, ignoreCase = true) }.takeIf { it != -1 } ?: -1
+                if (startMonthIndex != -1) {
+                    val monthDiff = (monthIdx - startMonthIndex + 12) % 12
+                    monthDiff % 2 == 0
+                } else {
+                    true
+                }
+            } else {
+                true
+            }
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize().padding(vertical = 8.dp)) {
-        // Month Navigation Header
+        // Mode Selector: Month | Week | Day
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+            horizontalArrangement = Arrangement.Center
+        ) {
+            listOf("month" to "Month", "week" to "Week", "day" to "Day").forEach { (mode, label) ->
+                FilterChip(
+                    selected = calendarMode == mode,
+                    onClick = { calendarMode = mode },
+                    label = { Text(label) },
+                    modifier = Modifier.padding(horizontal = 4.dp).testTag("btn_cal_mode_$mode")
+                )
+            }
+        }
+
+        // Navigation Header
         Surface(
             tonalElevation = 2.dp,
             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
-            shape = androidx.compose.foundation.shape.RoundedCornerShape(8.dp)
+            shape = RoundedCornerShape(8.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(8.dp), 
@@ -1174,118 +1240,287 @@ fun SubscriptionCalendarView(subscriptions: List<Subscription>, onViewItem: (Sub
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 IconButton(onClick = {
-                    val newCal = calendarState.clone() as java.util.Calendar
-                    newCal.add(java.util.Calendar.MONTH, -1)
+                    val newCal = calendarState.clone() as Calendar
+                    when (calendarMode) {
+                        "month" -> newCal.add(Calendar.MONTH, -1)
+                        "week" -> newCal.add(Calendar.WEEK_OF_YEAR, -1)
+                        "day" -> newCal.add(Calendar.DAY_OF_YEAR, -1)
+                    }
                     calendarState = newCal
                 }) { Icon(Icons.Default.ChevronLeft, "Prev") }
                 
-                Text(text = monthName, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                val titleText = when (calendarMode) {
+                    "month" -> SimpleDateFormat("MMMM yyyy", currentLocale).format(calendarState.time)
+                    "week" -> {
+                        val weekStart = (calendarState.clone() as Calendar).apply { set(Calendar.DAY_OF_WEEK, Calendar.SUNDAY) }
+                        val weekEnd = (calendarState.clone() as Calendar).apply { set(Calendar.DAY_OF_WEEK, Calendar.SATURDAY) }
+                        "${SimpleDateFormat("MMM d", currentLocale).format(weekStart.time)} - ${SimpleDateFormat("MMM d, yyyy", currentLocale).format(weekEnd.time)}"
+                    }
+                    else -> SimpleDateFormat("EEEE, MMM d, yyyy", currentLocale).format(calendarState.time)
+                }
+
+                Text(
+                    text = titleText, 
+                    style = MaterialTheme.typography.titleMedium, 
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.testTag("text_cal_header_title")
+                )
                 
                 IconButton(onClick = {
-                    val newCal = calendarState.clone() as java.util.Calendar
-                    newCal.add(java.util.Calendar.MONTH, 1)
+                    val newCal = calendarState.clone() as Calendar
+                    when (calendarMode) {
+                        "month" -> newCal.add(Calendar.MONTH, 1)
+                        "week" -> newCal.add(Calendar.WEEK_OF_YEAR, 1)
+                        "day" -> newCal.add(Calendar.DAY_OF_YEAR, 1)
+                    }
                     calendarState = newCal
                 }) { Icon(Icons.Default.ChevronRight, "Next") }
             }
         }
 
-        // Days of Week Header
-        Row(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
-            listOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat").forEach {
-                Text(
-                    text = it, 
-                    modifier = Modifier.weight(1f), 
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center, 
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.secondary
-                )
-            }
-        }
+        when (calendarMode) {
+            "month" -> {
+                // Days of Week Header
+                Row(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
+                    listOf("Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat").forEach {
+                        Text(
+                            text = it, 
+                            modifier = Modifier.weight(1f), 
+                            textAlign = TextAlign.Center,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.secondary
+                        )
+                    }
+                }
 
-        // Calendar Grid
-        val rows = days.chunked(7)
-        Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-            rows.forEach { rowDays ->
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    rowDays.forEach { day ->
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(100.dp)
-                                .border(0.2.dp, Color.LightGray)
-                                .background(if (day != null && isToday(day, calendarState)) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.1f) else Color.Transparent)
-                        ) {
-                            if (day != null) {
-                                val isCurrentDay = isToday(day, calendarState)
-                                Box(
+                val daysInMonth = calendarState.getActualMaximum(Calendar.DAY_OF_MONTH)
+                val firstDayOfMonth = (calendarState.clone() as Calendar).apply { set(Calendar.DAY_OF_MONTH, 1) }
+                val firstDayOfWeek = firstDayOfMonth.get(Calendar.DAY_OF_WEEK)
+                
+                val days = remember(calendarState) {
+                    val list = mutableListOf<Int?>()
+                    repeat(firstDayOfWeek - 1) { list.add(null) }
+                    for (i in 1..daysInMonth) { list.add(i) }
+                    while (list.size % 7 != 0) { list.add(null) }
+                    list
+                }
+
+                val daySubsMap = remember(subscriptions, currentMonth) {
+                    val map = mutableMapOf<Int, List<Subscription>>()
+                    for (day in 1..31) {
+                        val testCal = (calendarState.clone() as Calendar).apply { set(Calendar.DAY_OF_MONTH, day) }
+                        val filteredForDay = getSubscriptionsForDate(testCal)
+                        if (filteredForDay.isNotEmpty()) map[day] = filteredForDay
+                    }
+                    map
+                }
+
+                val rows = days.chunked(7)
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    rows.forEach { rowDays ->
+                        Row(modifier = Modifier.fillMaxWidth().height(90.dp)) {
+                            rowDays.forEach { day ->
+                                Column(
                                     modifier = Modifier
-                                        .padding(4.dp)
-                                        .size(24.dp)
-                                        .background(if (isCurrentDay) Color.White else Color.Transparent, CircleShape)
-                                        .then(if (isCurrentDay) Modifier.border(1.dp, Color.Black, CircleShape) else Modifier),
-                                    contentAlignment = Alignment.Center
+                                        .weight(1f)
+                                        .height(90.dp)
+                                        .border(0.2.dp, Color.LightGray)
+                                        .background(if (day != null && isToday(day, calendarState)) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.1f) else Color.Transparent)
+                                        .then(if (day != null) Modifier.clickable {
+                                            val targetCal = (calendarState.clone() as Calendar).apply { set(Calendar.DAY_OF_MONTH, day) }
+                                            calendarState = targetCal
+                                            calendarMode = "day"
+                                        } else Modifier)
+                                        .padding(2.dp)
                                 ) {
-                                    Text(
-                                        text = day.toString(), 
-                                        style = MaterialTheme.typography.labelSmall,
-                                        fontWeight = if (isCurrentDay) FontWeight.Bold else FontWeight.Normal,
-                                        color = if (isCurrentDay) Color.Black else MaterialTheme.colorScheme.onSurface
-                                    )
-                                }
-                                
-                                val daySubs = subscriptions.filter { sub ->
-                                    val dueDay = Regex("(\\d+)").find(sub.dueDate)?.value?.toIntOrNull() ?: -1
-                                    if (sub.period.lowercase() == "annual") {
-                                        val months = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
-                                        val subMonth = months.indexOf(sub.dueDate.split(" ").firstOrNull()).takeIf { it != -1 } ?: -1
-                                        subMonth == currentMonth && dueDay == day
-                                    } else {
-                                        dueDay == day
-                                    }
-                                }
+                                    if (day != null) {
+                                        val isCurrentDay = isToday(day, calendarState)
+                                        val daySubs = daySubsMap[day] ?: emptyList()
 
-                                Column(modifier = Modifier.padding(top = 20.dp, start = 2.dp, end = 2.dp)) {
-                                    daySubs.take(2).forEach { sub ->
-                                        androidx.compose.runtime.key(sub.id ?: sub.name) {
-                                            val interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = day.toString(), 
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = if (isCurrentDay) FontWeight.Bold else FontWeight.Normal,
+                                                color = if (isCurrentDay) Color.Black else MaterialTheme.colorScheme.onSurface,
+                                                modifier = Modifier.padding(2.dp)
+                                            )
+                                            if (daySubs.size > 2) {
+                                                Text(
+                                                    text = "+${daySubs.size - 2}", 
+                                                    style = MaterialTheme.typography.labelSmall, 
+                                                    fontSize = 8.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                    modifier = Modifier.padding(end = 2.dp)
+                                                )
+                                            }
+                                        }
+
+                                        daySubs.take(2).forEach { sub ->
                                             Surface(
+                                                color = MaterialTheme.colorScheme.secondaryContainer,
+                                                shape = RoundedCornerShape(2.dp),
                                                 modifier = Modifier
                                                     .fillMaxWidth()
                                                     .padding(vertical = 1.dp)
-                                                    .clickable(
-                                                        indication = null,
-                                                        interactionSource = interactionSource
-                                                    ) { onViewItem(sub) },
-                                                color = MaterialTheme.colorScheme.secondaryContainer,
-                                                shape = androidx.compose.foundation.shape.RoundedCornerShape(2.dp)
+                                                    .clickable { onViewItem(sub) }
                                             ) {
                                                 Text(
                                                     text = sub.name, 
                                                     style = MaterialTheme.typography.labelSmall,
                                                     maxLines = 1,
-                                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                                                    overflow = TextOverflow.Ellipsis,
                                                     modifier = Modifier.padding(1.dp),
                                                     fontSize = 8.sp
                                                 )
                                             }
                                         }
                                     }
-                                    if (daySubs.size > 2) {
-                                        Text(
-                                            text = "+${daySubs.size - 2}", 
-                                            style = MaterialTheme.typography.labelSmall, 
-                                            fontSize = 7.sp,
-                                            modifier = Modifier.padding(start = 2.dp)
-                                        )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            "week" -> {
+                val weekStart = (calendarState.clone() as Calendar).apply { set(Calendar.DAY_OF_WEEK, Calendar.SUNDAY) }
+                val weekDays = remember(calendarState) {
+                    (0..6).map { i ->
+                        (weekStart.clone() as Calendar).apply { add(Calendar.DAY_OF_YEAR, i) }
+                    }
+                }
+
+                Row(modifier = Modifier.fillMaxSize()) {
+                    weekDays.forEach { date ->
+                        val daySubs = getSubscriptionsForDate(date)
+                        val isSelectedToday = isToday(date.get(Calendar.DAY_OF_MONTH), date)
+
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .border(0.2.dp, Color.LightGray)
+                                .background(if (isSelectedToday) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.1f) else Color.Transparent)
+                                .padding(2.dp)
+                        ) {
+                            Surface(
+                                color = if (isSelectedToday) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                                shape = RoundedCornerShape(4.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        calendarState = date.clone() as Calendar
+                                        calendarMode = "day"
+                                    }
+                            ) {
+                                Column(
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    modifier = Modifier.padding(2.dp)
+                                ) {
+                                    Text(
+                                        text = SimpleDateFormat("EEE", currentLocale).format(date.time),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontSize = 10.sp,
+                                        color = if (isSelectedToday) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    Text(
+                                        text = date.get(Calendar.DAY_OF_MONTH).toString(),
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isSelectedToday) Color.White else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(4.dp))
+
+                            Column(
+                                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+                            ) {
+                                daySubs.forEach { sub ->
+                                    Card(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(vertical = 2.dp)
+                                            .clickable { onViewItem(sub) },
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                                    ) {
+                                        Column(modifier = Modifier.padding(4.dp)) {
+                                            Text(
+                                                text = sub.name,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontWeight = FontWeight.Bold,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                fontSize = 9.sp
+                                            )
+                                            Text(
+                                                text = sub.amount,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontSize = 8.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                    // Fill remaining boxes in last row if needed
-                    if (rowDays.size < 7) {
-                        repeat(7 - rowDays.size) {
-                            Box(modifier = Modifier.weight(1f).height(100.dp))
+                }
+            }
+
+            "day" -> {
+                val daySubs = getSubscriptionsForDate(calendarState)
+
+                Column(
+                    modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+                ) {
+                    if (daySubs.isEmpty()) {
+                        Box(
+                            modifier = Modifier.fillMaxWidth().padding(32.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("No subscriptions due on this date.", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    } else {
+                        daySubs.forEach { sub ->
+                            Card(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 6.dp)
+                                    .clickable { onViewItem(sub) }
+                                    .testTag("day_view_item_${sub.name}")
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth().padding(16.dp),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(text = sub.name, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+                                        if (sub.account.isNotBlank()) {
+                                            Text(text = "Account: ${sub.account}", style = MaterialTheme.typography.bodySmall)
+                                        }
+                                        Text(
+                                            text = "${sub.amount} • Due: ${sub.dueDate} (${sub.period.replace("_", " ").uppercase()})", 
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                        if (sub.memo.isNotBlank()) {
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text(text = "Memo: ${sub.memo}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                    Icon(Icons.Default.ChevronRight, contentDescription = "View Details")
+                                }
+                            }
                         }
                     }
                 }
@@ -1634,12 +1869,12 @@ fun SubscriptionDialog(
     val months = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
     
     // Parse initial due date components for dropdowns
-    val initialDay = if (initialPeriod == "annual") {
+    val initialDay = if (initialPeriod == "annual" || initialPeriod == "every two months") {
         initialDueDate.split(" ").getOrNull(1)?.filter { it.isDigit() } ?: "1"
     } else {
         initialDueDate.filter { it.isDigit() }.ifEmpty { "1" }
     }
-    val initialDueMonth = if (initialPeriod == "annual") initialDueDate.split(" ").firstOrNull() ?: "January" else "January"
+    val initialDueMonth = if (initialPeriod == "annual" || initialPeriod == "every two months") initialDueDate.split(" ").firstOrNull() ?: "January" else "January"
 
     var selectedDueMonth by remember { mutableStateOf(initialDueMonth) }
     var selectedDueDay by remember { mutableStateOf(initialDay) }
@@ -1689,7 +1924,7 @@ fun SubscriptionDialog(
             // Period Selection
             Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                 OutlinedTextField(
-                    value = p.replaceFirstChar { it.uppercase() },
+                    value = p.split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } },
                     onValueChange = { },
                     label = { Text("Period") },
                     readOnly = true,
@@ -1698,12 +1933,13 @@ fun SubscriptionDialog(
                 )
                 DropdownMenu(expanded = periodExpanded, onDismissRequest = { periodExpanded = false }) {
                     DropdownMenuItem(text = { Text("Monthly") }, onClick = { p = "monthly"; periodExpanded = false })
+                    DropdownMenuItem(text = { Text("Every two months") }, onClick = { p = "every two months"; periodExpanded = false })
                     DropdownMenuItem(text = { Text("Annual") }, onClick = { p = "annual"; periodExpanded = false })
                 }
             }
 
-            // Due Date Month (Only if Annual)
-            if (p == "annual") {
+            // Due Date Month (If Annual or Every two months)
+            if (p == "annual" || p == "every two months") {
                 Box(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
                     OutlinedTextField(
                         value = selectedDueMonth,
@@ -1807,7 +2043,7 @@ fun SubscriptionDialog(
     confirmButton = { 
         Button(
             onClick = { 
-                val finalDueDate = if (p == "annual") "$selectedDueMonth ${selectedDueDay}${getOrdinal(selectedDueDay)}" else "${selectedDueDay}${getOrdinal(selectedDueDay)}"
+                val finalDueDate = if (p == "annual" || p == "every two months") "$selectedDueMonth ${selectedDueDay}${getOrdinal(selectedDueDay)}" else "${selectedDueDay}${getOrdinal(selectedDueDay)}"
                 onSave(n, a, am, finalDueDate, p, mth, formattedCD, m, isActive)
             },
             modifier = Modifier.testTag("btn_save_sub")
@@ -1829,7 +2065,7 @@ fun ViewSubscriptionDialog(item: Subscription, onDismiss: () -> Unit) {
             Column {
                 if (item.account.isNotBlank()) Text("Account: ${item.account}", style = MaterialTheme.typography.bodyLarge)
                 Text("Amount: ${item.amount}", style = MaterialTheme.typography.bodyLarge)
-                Text("Period: ${item.period.replaceFirstChar { it.uppercase() }}", style = MaterialTheme.typography.bodyLarge)
+                Text("Period: ${item.period.split(" ").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }}", style = MaterialTheme.typography.bodyLarge)
                 Text("Due Date: ${item.dueDate}", style = MaterialTheme.typography.bodyLarge)
                 if (item.month.isNotBlank()) Text("Month: ${item.month}", style = MaterialTheme.typography.bodyLarge)
                 if (item.calendarDate.isNotBlank()) Text("Calendar: ${item.calendarDate}", style = MaterialTheme.typography.bodyLarge)

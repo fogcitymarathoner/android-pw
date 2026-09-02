@@ -112,4 +112,19 @@ class SubscriptionSortingTest {
         assertEquals("jan sub", sorted[0].name)
         assertEquals("Feb Sub", sorted[1].name)
     }
+
+    @Test
+    fun testSubscriptionSorting_EveryTwoMonths() {
+        val subs = listOf(
+            Subscription(name = "Annual", dueDate = "January 1st", period = "annual"),
+            Subscription(name = "BiMonthly", dueDate = "February 1st", period = "every two months"),
+            Subscription(name = "Monthly", dueDate = "15th", period = "monthly")
+        )
+
+        val sorted = subs.sortByDueDate()
+
+        assertEquals("Monthly", sorted[0].name)
+        assertEquals("BiMonthly", sorted[1].name)
+        assertEquals("Annual", sorted[2].name)
+    }
 }

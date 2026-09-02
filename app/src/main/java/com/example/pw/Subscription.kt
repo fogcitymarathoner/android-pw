@@ -28,11 +28,18 @@ fun List<Subscription>.sortByDueDate(): List<Subscription> {
     val months = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
     
     return this.sortedWith(compareBy({ 
-        if (it.period.lowercase() == "annual") {
+        when (it.period.lowercase().replace("_", " ")) {
+            "annual" -> 2
+            "every two months" -> 1
+            else -> 0 // Monthly and others at the top
+        }
+    }, {
+        val periodLower = it.period.lowercase().replace("_", " ")
+        if (periodLower == "annual" || periodLower == "every two months") {
             val monthName = it.dueDate.split(" ").firstOrNull()
-            months.indexOf(monthName?.lowercase()?.replaceFirstChar { it.uppercase() }).takeIf { idx -> idx != -1 } ?: 99
+            months.indexOfFirst { m -> m.equals(monthName, ignoreCase = true) }.takeIf { idx -> idx != -1 } ?: 99
         } else {
-            -1 // Monthly items at the top
+            -1
         }
     }, {
         val digitRegex = Regex("(\\d+)")
