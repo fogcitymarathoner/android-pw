@@ -1821,6 +1821,8 @@ fun EntryDialog(title: String, initialVendor: String = "", initialAccount: Strin
     var password by remember { mutableStateOf(initialPassword) }
     var memo by remember { mutableStateOf(initialMemo) }
     var originalPassword by remember { mutableStateOf(initialPassword) }
+    var selectedPasswordLength by remember { mutableStateOf(12) }
+
     val clipboardManager = LocalClipboardManager.current
     val context = LocalContext.current
     AlertDialog(onDismissRequest = onDismiss, title = { Text(title) }, text = {
@@ -1864,10 +1866,36 @@ fun EntryDialog(title: String, initialVendor: String = "", initialAccount: Strin
                         clipboardManager.setText(AnnotatedString(password))
                         safeToast(context, "Copied")
                     }) { Icon(Icons.Default.ContentCopy, null) }
-                    IconButton(onClick = { password = generateStrongPassword() }) { Icon(Icons.Default.VpnKey, null) }
+                    IconButton(onClick = { password = generateStrongPassword(selectedPasswordLength) }) { Icon(Icons.Default.VpnKey, null) }
                 } })
             Spacer(modifier = Modifier.height(8.dp))
-            Button(onClick = { password = generateStrongPassword() }, modifier = Modifier.fillMaxWidth()) { Text("Generate Strong Password") }
+
+            // Length options row (12 - 14 chars, defaulting to 12)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(text = "Length:", style = MaterialTheme.typography.bodyMedium)
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    listOf(12, 13, 14).forEach { len ->
+                        FilterChip(
+                            selected = selectedPasswordLength == len,
+                            onClick = { selectedPasswordLength = len },
+                            label = { Text("$len") },
+                            modifier = Modifier.testTag("chip_pw_length_$len")
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Button(
+                onClick = { password = generateStrongPassword(selectedPasswordLength) }, 
+                modifier = Modifier.fillMaxWidth().testTag("btn_generate_password")
+            ) { 
+                Text("Generate Strong Password (${selectedPasswordLength} chars)") 
+            }
         }
     }, 
     confirmButton = { 

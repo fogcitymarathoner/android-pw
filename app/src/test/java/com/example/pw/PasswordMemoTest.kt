@@ -43,4 +43,19 @@ class PasswordMemoTest {
         assertEquals("New Bank", updated.vendor)
         assertEquals("Original memo", updated.memo)
     }
+
+    @Test
+    fun testGenerateStrongPassword_Lengths() {
+        val defaultPw = generateStrongPassword()
+        assertEquals(12, defaultPw.length)
+
+        val pw12 = generateStrongPassword(12)
+        assertEquals(12, pw12.length)
+
+        val pw13 = generateStrongPassword(13)
+        assertEquals(13, pw13.length)
+
+        val pw14 = generateStrongPassword(14)
+        assertEquals(14, pw14.length)
+    }
 }
